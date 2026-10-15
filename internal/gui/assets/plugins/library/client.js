@@ -499,13 +499,13 @@ magpie.plugin("library", (ctx) => {
     let ok = false;
     try {
       const v = await api("library/" + path, body);
-      take(v.part === "instructions" ? { ...lib, instructions: v.instructions, problems: v.problems, result: v.result } : v);
+      take(v.part === "instructions" ? { ...lib, instructions: v.instructions, problems: v.problems, result: v.result } : v.part === "prompts" ? { ...lib, prompts: v.prompts, result: v.result } : v);
       status(""); // what it did, said next, or nothing for one that says nothing
       report(v.result, done);
       ok = true;
       return true;
     } catch (e) {
-      status(e.message, "err", 6000);
+      status(path.startsWith("prompts/") ? promptError(e.message) : e.message, "err", 6000);
       return false;
     } finally {
       changing = false;
@@ -781,6 +781,7 @@ magpie.plugin("library", (ctx) => {
     head.classList.toggle("stuck", top > 0);
     if (!lib.agents.length) {
       page.append(empty(t("No agents to write to"), t("Install Claude Code, Codex, Gemini CLI, OpenCode… and the library can give them the same instructions, MCP servers and skills.")));
+      if (tab === "instructions") renderPrompts(page);
       return;
     }
     // what changed in a tab is drawn in place: only another tab (or the
@@ -1173,7 +1174,147 @@ magpie.plugin("library", (ctx) => {
     body.append(list);
     const skip = shownAgents().filter((a) => !a.instructions);
     if (skip.length) body.append(el("p", "lib-aside", t(skip.length > 1 ? "{agents} keep no user-wide instructions file." : "{agents} keeps no user-wide instructions file.", { agents: skip.map((a) => a.name).join(", ") })));
+    renderPrompts(body);
     body.append(bar);
+  }
+
+  // ---------- explicitly invoked prompt templates ----------
+
+  let promptSearch = "";
+  function promptError(message) {
+    const duplicate = /^the library already has a prompt called (.+)$/.exec(message);
+    if (duplicate) return t("A template named {name} already exists", { name: duplicate[1] });
+    if (message.startsWith("no prompt called ")) return t("This template no longer exists");
+    return t(message);
+  }
+  const promptLabel = (s) => t(({ enabled: "Enabled", available: "Not enabled", conflict: "Name conflict", edited: "Edited outside the library", unverified: "Awaiting verification", unsupported: "Unavailable" })[s.status] || "Awaiting verification");
+
+  function renderPrompts(body) {
+    const card = el("div", "list lib-list lib-prompts");
+    const head = el("div", "lib-cardhead");
+    const refresh = button(t("Refresh"), "action", async () => {
+      refresh.disabled = true;
+      try { const v = await api("library/prompts"); lib.prompts = v; render(); } catch (e) { status(e.message, "err"); } finally { refresh.disabled = false; }
+    });
+    head.append(glyph(GLYPH.doc), el("b", "", t("Prompt templates")), el("span", "grow"), refresh, button("+ " + t("New template"), "action lib-prompt-add", () => editPrompt()));
+    card.append(head, el("p", "lib-aside", t("Type /name in a supported harness to use a template with your request.")));
+    const search = input(promptSearch, t("Search templates"));
+    search.className = "lib-prompt-search";
+    search.setAttribute("aria-label", t("Search templates"));
+    const list = el("div", "lib-prompt-items");
+    const draw = () => {
+      list.replaceChildren();
+      const q = promptSearch.normalize("NFKC").toLowerCase();
+      for (const p of (lib.prompts?.items || []).filter(p => (p.name + "\n" + p.text).normalize("NFKC").toLowerCase().includes(q))) {
+        const row = el("div", "row lib-row click lib-prompt-row");
+        row.tabIndex = 0; row.setAttribute("role", "button");
+        const who = el("div", "who");
+        who.append(el("div", "name", "/" + p.name), el("div", "sub", p.error || p.text.split("\n").find(l => l.trim()) || t("Empty")));
+        const tags = el("div", "lib-tags");
+        const enabled = (p.states || []).filter(s => s.status === "enabled").length;
+        tags.append(tag(t("{n} enabled", { n: enabled })));
+        if ((p.agents || []).some(id => lib.prompts?.targets?.some(a => a.id === id && a.verification === "pending"))) tags.append(tag(t("Awaiting verification")));
+        if (p.error || (p.states || []).some(s => (p.agents || []).includes(s.agent) && !["enabled", "available"].includes(s.status))) tags.append(tag(t("Needs attention"), "warn"));
+        row.append(glyph(GLYPH.doc), who, tags);
+        row.onclick = () => editPrompt(p);
+        row.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); editPrompt(p); } };
+        list.append(row);
+      }
+      if (!list.childElementCount) list.append(el("div", "lib-none", t(promptSearch ? "No matching templates" : "No prompt templates yet")));
+    };
+    search.oninput = () => { promptSearch = search.value; draw(); };
+    card.append(search, list); body.append(card); draw();
+  }
+
+  function editPrompt(p) {
+    const targets = lib.prompts?.targets || [];
+    const d = { id: p?.id || "", name: p?.name || "", text: p?.text || "", agents: p ? [...p.agents] : targets.filter(a => a.detected).map(a => a.id) };
+    const original = JSON.stringify(d);
+    const ed = el("div", "editor lib-editor lib-prompt-editor");
+    const head = el("div", "ehead");
+    head.append(glyph(GLYPH.doc), el("b", "", t(p ? "Edit template" : "New template")));
+    ed.append(head);
+    const error = el("div", "editor-error lib-prompt-error");
+    const name = field2(d.name, t("e.g. review or 代码审查"), v => { d.name = v; checked = ""; });
+    name.dataset.prompt = "name";
+    name.setAttribute("aria-label", t("Name"));
+    ed.append(...field(t("Name"), name, t("Chinese or English letters, digits, - and _; up to 60 characters")));
+    const text = el("textarea", "lib-text small lib-prompt-text");
+    text.dataset.prompt = "text"; text.value = d.text; text.spellcheck = false;
+    text.setAttribute("aria-label", t("Template text"));
+    text.oninput = () => { d.text = text.value; checked = ""; };
+    text.onkeydown = e => {
+      e.stopPropagation(); if (e.isComposing || e.keyCode === 229) return;
+      if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); save(); }
+    };
+    ed.append(...field(t("Template text"), text, t("The harness adds your request using its native command behavior.")));
+    const checks = el("div", "lib-prompt-targets");
+    let states = p?.states || [], checked = "", working = false;
+    function drawTargets() {
+      checks.replaceChildren();
+      for (const a of targets) {
+        if (!a.detected && !d.agents.includes(a.id)) continue;
+        const s = states.find(s => s.agent === a.id);
+        const blocked = !a.detected || (s && !["available", "enabled"].includes(s.status));
+        const row = el("div", "lib-prompt-target"); row.dataset.agent = a.id;
+        const label = el("label", "lib-prompt-target-label");
+        const pick = el("input"); pick.type = "checkbox";
+        pick.checked = d.agents.includes(a.id) && !blocked;
+        pick.disabled = !!blocked;
+        pick.onchange = () => { d.agents = pick.checked ? [...new Set([...d.agents, a.id])] : d.agents.filter(id => id !== a.id); };
+        label.append(pick, el("span", "", a.name), el("span", "grow"), el("span", "note", s ? promptLabel(s) : t("Check availability")));
+        row.append(label);
+        if (s?.reason || s?.source) row.append(el("div", "note lib-prompt-reason", [s.reason ? t(s.reason) : "", s.source].filter(Boolean).join(" · ")));
+        if (a.shared) row.append(el("div", "note", t("Shares skill files with Codex CLI")));
+        if (a.verification === "pending") row.append(el("div", "note", t("Native behavior awaits verification on this installation")));
+        if (a.reload) row.append(el("div", "note", t(a.reload)));
+        checks.append(row);
+      }
+    }
+    const checkButton = button(t("Check availability"), "action lib-prompt-check", () => check());
+    ed.append(checkButton, checks, el("p", "lib-aside", t("Checks built-in commands, global configuration and projects registered in the Library.")), error);
+    async function check() {
+      const key = JSON.stringify([d.name, d.text]);
+      if (checked === key) return true;
+      const answer = await api("library/prompts/check", { id: d.id, name: d.name.trim(), text: d.text });
+      if (JSON.stringify([d.name, d.text]) !== key || modal?.editor !== ed || confirmationPending) return false;
+      states = answer; checked = key;
+      d.agents = d.agents.filter(id => states.some(s => s.agent === id && ["available", "enabled"].includes(s.status)));
+      drawTargets(); return true;
+    }
+    async function save() {
+      if (working) return;
+      working = true; saveButton.disabled = true; cancelButton.disabled = true; error.textContent = "";
+      if (modal?.editor === ed) modal.saving = true;
+      try {
+        if (!await check()) return;
+        if (await change("prompts/save", { ...d, name: d.name.trim() })) await closeLibModal(true);
+        else error.textContent = $("#status").textContent;
+      } catch (e) { error.textContent = promptError(e.message); }
+      finally { working = false; saveButton.disabled = false; cancelButton.disabled = false; if (modal?.editor === ed) modal.saving = false; }
+    }
+    checkButton.onclick = async e => {
+      e.stopPropagation(); if (working) return;
+      working = true; checkButton.disabled = true; error.textContent = "";
+      status("");
+      try { await check(); } catch (e) { error.textContent = promptError(e.message); }
+      finally { working = false; checkButton.disabled = false; }
+    };
+    const bar = el("div", "bar");
+    if (p) {
+      const remove = button(t("Remove"), "action danger lib-prompt-remove", () => {
+        remove.textContent = t("Remove {name}?", { name: p.name });
+        remove.classList.add("lib-prompt-confirm-remove");
+        remove.onclick = async e => { e.stopPropagation(); if (await change("prompts/remove", { id: p.id })) await closeLibModal(true); };
+      });
+      bar.append(remove);
+    }
+    const saveButton = button(t("Save"), "primary lib-prompt-save", save);
+    const cancelButton = button(t("Cancel"), "", closeLibModal);
+    bar.append(el("span", "grow"), cancelButton, saveButton);
+    ed.append(bar); drawTargets();
+    modal = { save, kind: "prompt", editor: ed, dirty: () => JSON.stringify(d) !== original };
+    openLib(ed); requestAnimationFrame(() => name.focus({ preventScroll: true }));
   }
 
   function setRow(x) {
@@ -4954,6 +5095,7 @@ magpie.plugin("library", (ctx) => {
 
   function openLib(content) { openModal(content); $("#modal").classList.add("lib"); }
   async function closeLibModal(saved = false) {
+    if (saved !== true && modal?.kind === "prompt" && modal.saving) return false;
     if (saved !== true && (modal?.dirty?.() ?? modalFormDirty()) && !(await confirmDiscard())) return false;
     modal = null;
     closeModal().then(() => { if (!modal) $("#modal").classList.remove("lib"); });
@@ -4984,7 +5126,7 @@ magpie.plugin("library", (ctx) => {
         if (!confirmationPending && modal && e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); closeLibModal(); }
       }, true);
       // leaving the page with the shared text not saved asks first
-      window.addEventListener("beforeunload", (e) => { if (lib && dirty()) e.preventDefault(); });
+      window.addEventListener("beforeunload", (e) => { if (lib && (dirty() || modal?.kind === "prompt" && modal.dirty())) e.preventDefault(); });
       page.addEventListener("scroll", () => page.querySelector(".lib-head")?.classList.toggle("stuck", page.scrollTop > 0), { passive: true });
       document.addEventListener("visibilitychange", () => { if (!document.hidden) quietLoad(); });
       window.addEventListener("focus", quietLoad);
@@ -5011,7 +5153,7 @@ magpie.plugin("library", (ctx) => {
     redraw: () => { if (lib) render(); },
     // the reader leaving the page: its dialog closed, and what isn't saved
     close: () => { if (modal) closeLibModal(true); else closeModal(); },
-    dirty: () => !!lib && dirty(),
+    dirty: () => !!lib && (dirty() || modal?.kind === "prompt" && modal.dirty()),
     discard: () => discard(true),
   });
 });

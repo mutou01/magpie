@@ -22,6 +22,7 @@ import (
 // same way every time — no times, everything in order — so two computers
 // with the same library carry the same bundle.
 type Bundle struct {
+	Prompts      *[]CarriedPrompt  `json:"prompts,omitempty"` // nil: an old bundle, []: explicitly empty
 	Instructions Instructions      `json:"instructions"`
 	Texts        map[string]string `json:"texts,omitempty"` // set → its text
 	Extra        map[string]string `json:"extra,omitempty"` // agent → what it gets besides
@@ -65,6 +66,10 @@ func Collect() (*Bundle, error) {
 		return nil, err
 	}
 	b := &Bundle{Instructions: l.Instructions, Texts: map[string]string{}, Extra: extras(), MCP: []*Server{}, Skills: []*CarriedSkill{}, Icons: l.Icons}
+	b.Prompts, err = l.collectPrompts()
+	if err != nil {
+		return nil, err
+	}
 	b.Instructions.Agents = orNone(b.Instructions.Agents)
 	// a set's own file is this computer's: its text goes, where it is
 	// doesn't
@@ -186,6 +191,11 @@ func readSkills(dirs []string) []*CarriedSkill {
 // check refuses a bundle that would write outside the library: a name
 // that isn't one, a file's path that climbs out of its skill.
 func (b *Bundle) check() error {
+	if b.Prompts != nil {
+		if err := checkCarriedPrompts(*b.Prompts); err != nil {
+			return err
+		}
+	}
 	for _, s := range b.Instructions.Sets {
 		if err := checkName("set", s.ID); err != nil {
 			return err
@@ -319,6 +329,11 @@ func Put(b *Bundle) (*Result, error) {
 		return nil, err
 	}
 	return change(func(l *Library) error {
+		if b.Prompts != nil {
+			if err := l.putPrompts(*b.Prompts); err != nil {
+				return err
+			}
+		}
 		if err := os.MkdirAll(skillsDir(), 0o755); err != nil {
 			return err
 		}
@@ -399,7 +414,10 @@ func Put(b *Bundle) (*Result, error) {
 		l.Skills = skills
 
 		// the instructions: every text here that b hasn't goes, kept first
-		kept := newBackups()
+		kept := l.kept
+		if kept == nil {
+			kept = newBackups()
+		}
 		l.kept = kept
 		texts := map[string]string{}
 		// a set linked here to a file of the user's keeps it: the file is

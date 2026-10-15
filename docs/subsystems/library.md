@@ -28,6 +28,55 @@ agents RTK, a CLI that cuts shell output down before the model reads it.
 | Backups | Before a change first writes an agent file, `backups` copies it to `BackupDir`, one folder per change. The last `keepBackups` (30) changes are kept. The Backups button at the top of every tab, beside Library folder, opens that folder (`libHead`; Dade on Discord found it at the foot of a long page). | [`backup.go`](../../internal/library/backup.go) |
 | RTK | `SetRTK` runs rtk's own installer (`rtk init -g …`) for an agent being switched on. For one being switched off, it removes exactly what the installer wrote, using magpie's own code, which works even with rtk gone. `ReadRTK` reads each agent's files to say which have the hook. An agent gone for its CLI (`CLIMissing`, #2254) isn't offered rtk, but one that still has the hook is listed so it can be taken out. `rtkSpec.blocked` stops the installer where it would break an agent. `rtkSpec.env` tells the installer the agent's folder where rtk would pick another: Hermes Agent's is `appdir.HermesHome` (`%LOCALAPPDATA%\hermes` on Windows), which rtk is given as `HERMES_HOME`, since rtk 0.51 knows only `$HERMES_HOME` and `~/.hermes`. Antigravity CLI (`agy`, #2202) gets rtk 0.51's own plugin for Antigravity, `plugins/rtk` in its global customization folder `~/.gemini/config` (`plugin.json`, `hooks.json` with `PreToolUse` → `rtk hook antigravity`, `rules/AGENTS.md`), which `agy plugin list` lists; switching it off takes that one folder out. rtk 0.50 knows Antigravity only per project and fails `rtk init -g --agent antigravity`, so an older rtk is `blocked` (`agyBlocked`) and the row says to update RTK. A detected agent RTK has no hook for at all is still listed, from `rtkNoHook`, with the reason and a switch that can't be turned on (dsh: its hooks can allow or deny a command but not rewrite it, and `rtk init` has no `--agent dsh`; Grok Build and Grok App: `rtk init` has no Grok or Grok App agent, so both are listed with the switch off). | [`rtk.go`](../../internal/library/rtk.go) |
 
+## Prompt templates
+
+The Instructions tab also manages explicitly invoked, global prompt templates.
+They do not enter the shared instructions or change with its active set. The
+first adapters are Claude Code, Pi and Codex Desktop, the harnesses installed
+on the implementation machine; other harnesses and WSL have no adapter yet.
+
+[`prompts.go`](../../internal/library/prompts.go) owns `Prompt`, `ReadPrompts`,
+`CheckPrompt`, `SavePrompt` and `RemovePrompt`. Metadata and selected target ids
+live in library.json; UTF-8 bodies live at `library/prompts/<id>.md`. Names allow
+letters (including Chinese), numbers, `-` and `_`, at most 60 characters.
+NFKC and case-insensitive comparison prevents equivalent library names.
+
+[`prompt_targets.go`](../../internal/library/prompt_targets.go) writes Claude
+commands and Pi prompts as Markdown with `$ARGUMENTS`. Codex Desktop gets a
+skill in its resolved Codex home, with `policy.allow_implicit_invocation: false`
+in `agents/openai.yaml`; Desktop installation is checked with `Agent.HasApp`,
+independently of the CLI. Its skill files may also be read by Codex CLI; the
+page states that shared scope. Native argument processing and reload rules
+remain the harness's. Installation-specific runtime verification is shown
+separately from whether files have been deployed.
+
+[`prompt_conflicts.go`](../../internal/library/prompt_conflicts.go) checks the
+known built-in names and aliases, user commands and skills, local plugin
+declarations, and the Library's registered projects. It never runs plugins to
+discover their commands. A conflict blocks only that target. An unreadable or
+malformed source is unknown and blocks deployment; this scan does not claim
+to enumerate every dynamically registered command in an arbitrary session.
+Check is read-only; Save checks again under the library lock. Reads show each
+target's state and source, and missing bodies are never treated as empty text.
+
+[`prompt_sync.go`](../../internal/library/prompt_sync.go) records individual
+deployment paths and hashes in `Applied.Prompts`. A template change syncs only
+templates, and the regular sync also applies them. Edits made outside magpie
+are kept and reported. A new conflicting command retires only an unchanged
+owned deployment. New files are published without replacing an intervening
+user file; removed files are backed up. Generated template skills are excluded
+from ordinary skill discovery/import/removal.
+
+`Bundle.Prompts` carries text and selections, never Applied paths or hashes.
+An absent field in an old bundle preserves local templates; an explicitly
+empty array clears them. Setup snapshots keep selections by stable template
+id and restore those selections without replacing the template text.
+
+The GUI API has `GET /api/library/prompts` and `POST` actions `check`, `save`
+and `remove` below that path. Mutations answer `part: "prompts"`, preserving
+the other Library sections and their unsaved drafts. The existing editor,
+list styles, discard checks and translations are reused.
+
 ## Runtime path
 
 1. **Edit.** The Library page or `magpie library` calls an exported function such as `SaveServer`, `ServerAgents`, `InstallSkills`, `SkillAgents` or `SetSkillHow`. The skills and servers pages each have Select, Turn all on, Turn all off and Remove all. Select's bar calls `SomeSkillsAgents` or `SomeServersAgents` (`/api/library/{skills,servers}/agents-some`), Turn all on or off calls `EverySkillAgents` or `EveryServerAgents` for the agents shown, and Remove all calls `RemoveSkills` or `RemoveServers`. The hooks page has Select and Remove all too (`SomeHooksAgents`, `RemoveHooks`). Each of these is one change that takes every item out as a single removal would (#1027). Select's bar also has Remove… (#1852), which asks first, naming the count, and sends only the picked names to `RemoveSkills`, `RemoveServers` or `RemoveHooks`; ticking a group's or part's header picks all of it. A name that wasn't removed stays picked, with its error in its row's place (`pickErrs`), and the status names it; when every name fails the endpoint answers 400 and the sheet stays open. A row's agent chips start with All (`allChip` in `plugins/library/client.js`), which gives the item to every agent shown that can take it, or takes it from them all; the pickers that choose the agents before an item is added (installing skills from a repository or the market, adding, bringing in or installing a server) have the same All: most start with every agent lit, and one agent alone took a click on each of the others (#1531).
@@ -72,6 +121,8 @@ agents RTK, a CLI that cuts shell output down before the model reads it.
 ## Verification
 
 ```sh
+go test -tags nogui ./internal/library ./internal/gui -run '^TestPromptTemplate' -count=1
+node --test internal/gui/tests/library-prompts.test.cjs
 go test -tags nogui ./internal/library -run 'TestReadLooksAtEachFolderOnce|TestLinkChangedBetweenVisitsShows|TestUnreadablePartIsLookedAtAgain|TestCheckSkillsFindsNewOnes|TestNewBase|TestUpdateKeeps|TestCheckDue|TestCheckSkillsMarksItDone|TestTargets|TestServer|TestImportServer|TestCheck|TestInstructions|TestInstructionSets|TestLinkedSet|TestLinkRefused|TestSkill|TestRemoveFoundSkill|TestInstallSet|TestInstallLists|TestEverySkillAgents|TestEveryServerAgents|TestSomeServersAgents|TestRemoveServers|TestRTK|TestEnvRefs|TestDshRefRoundTrip|TestDshImportKeepsJS|TestAgentMCPFiles|TestCodeBuddyMCPFile|TestZedMCP|TestOwnServerFromElsewhereRunsThisMagpie|TestUsersOwnServerStaysAsItIs|TestCarriedOwnServerIsEachComputersMagpie|TestCarry|TestPageReadDoesntReadUnchangedSkillsAgain|TestJustWrittenSkillIsReadAgain|TestUnreadableSkillIsntRememberedAsDifferent|TestGlanceLeavesOutTheAgentsSkills|TestPluginAgent|TestPluginMCPFormatsAreWritten|TestToolsOff|TestOffList|TestHooks|TestCheckRenewsMagpiesSignIn|TestCheckSaysSignInRanOut|TestSignInAsTheUsersOwnApp|TestOAuthAppChecked|TestOAuthAppSecretCarried|TestGoneAgentListedToTakeOut'
 go test -race ./internal/mcpauth
 go test -tags nogui ./internal/library

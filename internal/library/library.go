@@ -21,6 +21,7 @@ import (
 
 // Library is library.json: what magpie keeps, and which agents get it.
 type Library struct {
+	Prompts      []*Prompt    `json:"prompts,omitempty"`
 	Instructions Instructions `json:"instructions"`
 	MCP          []*Server    `json:"mcp"`
 	Skills       []*Skill     `json:"skills"`
@@ -85,10 +86,11 @@ type InstrSet struct {
 
 // Applied is what magpie last wrote into one agent.
 type Applied struct {
-	Instructions bool     `json:"instructions,omitempty"`
-	InstrHash    string   `json:"instrHash,omitempty"` // of the part last written
-	MCP          []string `json:"mcp,omitempty"`
-	Skills       []string `json:"skills,omitempty"`
+	Prompts      map[string]*AppliedPrompt `json:"prompts,omitempty"`
+	Instructions bool                      `json:"instructions,omitempty"`
+	InstrHash    string                    `json:"instrHash,omitempty"` // of the part last written
+	MCP          []string                  `json:"mcp,omitempty"`
+	Skills       []string                  `json:"skills,omitempty"`
 	// ToolsOff are, for each server, the tools magpie put in the list its
 	// entry has of those the agent leaves out; ToolRules the rules beside
 	// the servers magpie added to leave tools out (Claude Code's deny
@@ -133,11 +135,18 @@ func load() (*Library, error) {
 	if l.Applied == nil {
 		l.Applied = map[string]*Applied{}
 	}
+	if err := checkPromptRecords(l.Prompts); err != nil {
+		return nil, fmt.Errorf("%s: %w", path(), err)
+	}
 	l.heal() // magpie's own servers run this computer's magpie (self_here.go)
 	return l, nil
 }
 
 func (l *Library) save() error {
+	sort.Slice(l.Prompts, func(i, j int) bool { return promptKey(l.Prompts[i].Name) < promptKey(l.Prompts[j].Name) })
+	for _, p := range l.Prompts {
+		p.Agents = orNone(p.Agents)
+	}
 	sort.Slice(l.MCP, func(i, j int) bool { return l.MCP[i].Name < l.MCP[j].Name })
 	sort.Slice(l.Skills, func(i, j int) bool { return l.Skills[i].Name < l.Skills[j].Name })
 	sort.Slice(l.Projects, func(i, j int) bool { return l.Projects[i].Dir < l.Projects[j].Dir })
