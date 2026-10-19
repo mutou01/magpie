@@ -38,8 +38,27 @@ first adapters are Claude Code, Pi and Codex Desktop, the harnesses installed
 on the implementation machine; other harnesses and WSL have no adapter yet.
 
 [`prompts.go`](../../internal/library/prompts.go) owns `Prompt`, `ReadPrompts`,
-`CheckPrompt`, `SavePrompt` and `RemovePrompt`. Metadata and selected target ids
-live in library.json; UTF-8 bodies live at `library/prompts/<id>.md`. Names allow
+`CheckPrompt`, `SavePrompt` and `RemovePrompt`. UTF-8 bodies live at
+`library/prompts/<id>.md`. [`prompt_store.go`](../../internal/library/prompt_store.go)
+keeps metadata, selected target ids and this machine's deployment paths/hashes
+in the authoritative, versioned `library/prompts.json`. `library.json` retains a
+compatibility mirror, but a pre-template binary can discard unknown fields when
+it saves that file. The separate index survives that rewrite. With no separate
+index, reads accept the legacy fields and the next save migrates them; reads
+alone do not write. An explicitly empty index overrides a stale mirror, so deleted
+templates cannot reappear. An unreadable, malformed, incomplete or unsupported
+index fails the operation instead of falling back to an empty library or stale
+ownership. Changed indexes use the existing atomic writer and join the change's
+normal file backup; unchanged indexes are not rewritten.
+
+This protects template metadata from older writers, not all concurrent changes
+to shared instructions, skills or agent files. Older versions cannot manage
+templates. Do not use multiple versions to edit the same Library concurrently.
+Missing indexes are not reconstructed automatically from orphan Markdown or
+matching commands: names, target choices and ownership must be established from
+independent evidence before recovery. Keep the original files aside first.
+Portable bundles still carry only template ids, names, choices and text, never
+the local index's deployment paths/hashes. Names allow
 letters (including Chinese), numbers, `-` and `_`, at most 60 characters.
 NFKC and case-insensitive comparison prevents equivalent library names.
 

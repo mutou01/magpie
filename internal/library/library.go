@@ -141,6 +141,9 @@ func load() (*Library, error) {
 	if l.Applied == nil {
 		l.Applied = map[string]*Applied{}
 	}
+	if err := l.loadPromptStore(); err != nil {
+		return nil, err
+	}
 	if err := checkPromptRecords(l.Prompts); err != nil {
 		return nil, fmt.Errorf("%s: %w", path(), err)
 	}
@@ -179,6 +182,9 @@ func (l *Library) save() error {
 	l.Instructions.Agents = orNone(l.Instructions.Agents)
 	b, err := json.MarshalIndent(l, "", "  ")
 	if err != nil {
+		return err
+	}
+	if err := l.savePromptStore(); err != nil {
 		return err
 	}
 	return edit.WriteAtomic(path(), append(b, '\n'))

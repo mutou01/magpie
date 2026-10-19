@@ -64,6 +64,7 @@ func (l *Library) sync() *Result {
 	if b == nil {
 		b = newBackups()
 	}
+	l.kept = b
 	all := Targets()
 	for _, step := range syncSteps(all, l.held(all), b, res) {
 		step(l)
@@ -145,6 +146,7 @@ func Sync() (*Result, error) {
 		if memo != nil && mu.held == heldAt+1 {
 			l.hashes, l.untouched = memo.hashes, memo.untouched
 		}
+		l.kept = b // index and deployment backups belong to this same sync
 		f(l)
 		if err := l.save(); err != nil {
 			return err
