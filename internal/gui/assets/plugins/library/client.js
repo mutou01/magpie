@@ -1280,8 +1280,9 @@ magpie.plugin("library", (ctx) => {
         const row = el("div", "lib-prompt-target"); row.dataset.agent = a.id;
         const label = el("label", "lib-prompt-target-label");
         const pick = el("input"); pick.type = "checkbox";
-        pick.checked = d.agents.includes(a.id) && !blocked;
-        pick.disabled = !!blocked;
+        const retained = s?.status === "unverified" && p?.agents.includes(a.id);
+        pick.checked = d.agents.includes(a.id) && (!blocked || retained);
+        pick.disabled = !!blocked && !retained;
         pick.onchange = () => { d.agents = pick.checked ? [...new Set([...d.agents, a.id])] : d.agents.filter(id => id !== a.id); };
         label.append(pick, el("span", "", a.name), el("span", "grow"), el("span", "note", s ? promptLabel(s) : t("Check availability")));
         row.append(label);
@@ -1293,14 +1294,19 @@ magpie.plugin("library", (ctx) => {
       }
     }
     const checkButton = button(t("Check availability"), "action lib-prompt-check", () => check());
-    ed.append(checkButton, checks, el("p", "lib-aside", t("Checks built-in commands, global configuration and projects registered in the Library.")), error);
-    async function check() {
+    const availability = el("div", "lib-prompt-availability");
+    if (targets.some(a => a.id === "pi" && a.detected)) availability.append(el("p", "lib-aside lib-prompt-runtime-note", t("Checking Pi starts it and loads extensions; startup code may run. Saving and syncing do not start Pi.")));
+    availability.append(checks, el("p", "lib-aside", t("Checks built-in commands, global configuration and projects registered in the Library.")));
+    ed.append(checkButton, availability);
+    ed.append(error);
+    async function check(fresh = false) {
       const key = JSON.stringify([d.name, d.text]);
-      if (checked === key) return true;
-      const answer = await api("library/prompts/check", { id: d.id, name: d.name.trim(), text: d.text });
+      if (!fresh && checked === key) return true;
+      const answer = await api("library/prompts/check", { id: d.id, name: d.name.trim(), text: d.text, passive: !fresh });
       if (JSON.stringify([d.name, d.text]) !== key || modal?.editor !== ed || confirmationPending) return false;
       states = answer; checked = key;
-      d.agents = d.agents.filter(id => states.some(s => s.agent === id && ["available", "enabled"].includes(s.status)));
+      // An unknown check must not turn an existing selection into a removal.
+      d.agents = d.agents.filter(id => states.some(s => s.agent === id && (["available", "enabled"].includes(s.status) || (s.status === "unverified" && p?.agents.includes(id)))));
       drawTargets(); return true;
     }
     async function save() {
@@ -1317,9 +1323,10 @@ magpie.plugin("library", (ctx) => {
     checkButton.onclick = async e => {
       e.stopPropagation(); if (working) return;
       working = true; checkButton.disabled = true; error.textContent = "";
+      checkButton.textContent = t("Checking…");
       status("");
-      try { await check(); } catch (e) { error.textContent = promptError(e.message); }
-      finally { working = false; checkButton.disabled = false; }
+      try { await check(true); } catch (e) { error.textContent = promptError(e.message); }
+      finally { working = false; checkButton.disabled = false; checkButton.textContent = t("Check availability"); }
     };
     const bar = el("div", "bar");
     if (p) {

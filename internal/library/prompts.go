@@ -1,6 +1,7 @@
 package library
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -69,6 +70,8 @@ type PromptChange struct {
 	Name   string   `json:"name"`
 	Text   string   `json:"text"`
 	Agents []string `json:"agents"`
+	// Passive is used by a save's preflight: it must not load extensions.
+	Passive bool `json:"passive,omitempty"`
 }
 
 func promptPath(id string) string  { return filepath.Join(Dir(), "prompts", id+".md") }
@@ -177,12 +180,32 @@ func ReadPrompts() (*PromptsView, error) {
 	return l.promptsView(), nil
 }
 
-// CheckPrompt validates a name without writing anything.
+// CheckPrompt explicitly checks availability. It does not deploy files, but
+// Pi's runtime check loads extensions, whose startup code may have side effects.
 func CheckPrompt(c PromptChange) ([]PromptState, error) {
+	return CheckPromptContext(context.Background(), c)
+}
+
+// CheckPromptContext lets the HTTP request cancel an explicit runtime check.
+func CheckPromptContext(ctx context.Context, c PromptChange) ([]PromptState, error) {
 	c.Name = strings.TrimSpace(c.Name)
 	mu.Lock()
-	defer mu.Unlock()
 	l, err := load()
+	if err == nil {
+		err = l.checkPrompt(c)
+	}
+	mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	if !c.Passive {
+		if t, ok := promptTargetByID(promptTargets(), "pi"); ok && t.Detected {
+			l.checkPiCommands(ctx, t)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	l, err = load()
 	if err != nil {
 		return nil, err
 	}

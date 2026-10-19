@@ -26,7 +26,9 @@ func promptRoutes(mux *http.ServeMux) {
 			var res *library.Result
 			var err error
 			if action == "check" {
-				v, err := library.CheckPrompt(c)
+				// Only an explicit check (passive omitted/false) may load Pi's
+				// extensions. A save's preflight sends passive:true.
+				v, err := library.CheckPromptContext(r.Context(), c)
 				if err != nil {
 					fail(w, err)
 					return

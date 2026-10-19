@@ -96,6 +96,10 @@ func (l *Library) promptState(t PromptTarget, p *Prompt, text string) PromptStat
 	}
 	if source, err := l.promptConflict(t, p); err != nil {
 		s.Status, s.Reason, s.Source = "unverified", "Could not check command sources", err.Error()
+		var runtimeErr *promptRuntimeError
+		if errors.As(err, &runtimeErr) {
+			s.Reason, s.Source = runtimeErr.reason, runtimeErr.detail
+		}
 		return s
 	} else if source != "" {
 		s.Status, s.Reason, s.Source = "conflict", "This name is already in use", source
@@ -140,6 +144,11 @@ func (l *Library) promptConflict(t PromptTarget, p *Prompt) (string, error) {
 	if t.ID == "codex-desktop" {
 		sources[0].skills = true
 		sources = append(sources, promptSource{path: filepath.Join(t.dir, "skills", ".system"), skills: true})
+	}
+	if t.ID == "pi" {
+		if hit, err := l.piCommandConflict(t, p); err != nil || hit != "" {
+			return hit, err
+		}
 	}
 	extra, err := promptConfiguredSources(t)
 	if err != nil {
@@ -290,16 +299,6 @@ func promptConfiguredSources(t PromptTarget) ([]promptSource, error) {
 		}
 		if err := readJSON(path, &cfg); err != nil {
 			return nil, err
-		}
-		if len(cfg.Extensions) > 0 || len(cfg.Packages) > 0 {
-			return nil, fmt.Errorf("dynamic extension commands need runtime verification: %s", path)
-		}
-		es, err := os.ReadDir(filepath.Join(t.dir, "extensions"))
-		if err != nil && !os.IsNotExist(err) {
-			return nil, err
-		}
-		if len(es) > 0 {
-			return nil, fmt.Errorf("dynamic extension commands need runtime verification: %s", filepath.Join(t.dir, "extensions"))
 		}
 		for _, p := range cfg.Prompts {
 			if strings.ContainsAny(p, "*?[]") || strings.HasPrefix(p, "!") {

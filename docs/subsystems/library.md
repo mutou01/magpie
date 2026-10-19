@@ -54,12 +54,49 @@ separately from whether files have been deployed.
 
 [`prompt_conflicts.go`](../../internal/library/prompt_conflicts.go) checks the
 known built-in names and aliases, user commands and skills, local plugin
-declarations, and the Library's registered projects. It never runs plugins to
-discover their commands. A conflict blocks only that target. An unreadable or
-malformed source is unknown and blocks deployment; this scan does not claim
-to enumerate every dynamically registered command in an arbitrary session.
-Check is read-only; Save checks again under the library lock. Reads show each
-target's state and source, and missing bodies are never treated as empty text.
+declarations, and the Library's registered projects. Passive checks never run
+extensions. A conflict blocks only that target. An unreadable or malformed
+source is unknown and blocks deployment; this scan does not claim to enumerate
+every dynamically registered command in an arbitrary future session. Save checks
+again under the library lock. Reads show each target's state and source, and
+missing bodies are never treated as empty text.
+
+Only the editor's **Check availability** starts Pi when extensions are present.
+[`prompt_runtime.go`](../../internal/library/prompt_runtime.go) asks Pi 0.87.1's
+native RPC `get_commands` in each distinct global/registered-project context,
+outside the Library lock. It submits no prompt, reload or authorization response.
+Loading extensions and their startup events can still execute code and cause
+external side effects; the warning is beside the button. This is not a sandbox.
+The check does not write Library templates or deployment files. Opening the page,
+refreshing it, saving and normal sync do not start Pi. `check` accepts
+`passive: true` for a save's preflight; omitted/false requests a fresh runtime
+check. The HTTP request context cancels the process, with a 30-second limit per
+context (including the version probe), bounded output and `proc.Tree` cleanup
+on Windows. Other targets continue when Pi fails.
+
+The process-local cache keeps the complete command list, independently of the
+template name; `/skill:name` does not occupy `/name`. It is neither serialized
+nor backed up. [`prompt_runtime_sources.go`](../../internal/library/prompt_runtime_sources.go)
+binds it to the executable/managed release selector, config, environment, working
+directories and registered projects, plus observable resource stamps. Like the
+skill comparison cache, stamps cover path/type/size/mtime; a rewrite preserving
+size and mtime or an extension's untracked external inputs can escape them.
+Managed template artifacts are excluded and remain protected by deployment
+hashes. Manual checking discards the prior answer, and only the newest concurrent
+check publishes its result. Sources changed during startup or unreadable sources
+discard the answer. Save and sync recheck static conflicts and cache validity;
+expired/failed verification preserves existing owned deployments and blocks only
+new Pi deployment until checking again.
+
+Unknown versions, failed/partial loads, invalid or oversized protocol output,
+interactive requests and untrusted project resources remain unverified. Pi's
+existing nearest trust decision or `defaultProjectTrust: always` is honored;
+magpie sends no trust response and does not write trust decisions. Extension
+startup effects remain outside that guarantee. Offline Pi can silently omit
+missing packages, so missing configured local resources and npm/Git packages
+whose resolution has not been verified remain unknown even with a successful
+empty RPC list. Native invocation acceptance remains separate from successful
+command enumeration.
 
 [`prompt_sync.go`](../../internal/library/prompt_sync.go) records individual
 deployment paths and hashes in `Applied.Prompts`. A template change syncs only
@@ -134,3 +171,7 @@ node --test internal/gui/tests/library-items.test.cjs internal/gui/tests/library
 
 The package's `TestMain` runs in a home of its own (`testenv`), never the
 user's real agent files.
+
+Windows-only Pi acceptance and the distinction between simulated protocol
+coverage and real harness evidence are described in
+[Pi prompt verification](../pi-prompt-verification.md).
