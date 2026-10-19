@@ -576,7 +576,9 @@ func SetModelPrefs(pid string, prefs map[string]ModelPref) error {
 // setModelSame says which model a provider's model, spelt "provider/model",
 // is the same as, for one a vendor names its own way (Volcengine Ark's
 // dated ids, kyzhouxu on #583): the routing groups magpie finds merge it
-// with that model from every other provider (autoGroups). The name is a
+// with that model from every other provider (autoGroups), and a call to
+// it no list prices is costed at that model's maker's price (SamePriceIn,
+// #2344). The name is a
 // model's id as any vendor spells it ("deepseek-v4.1-flash", or with a
 // vendor's prefix); "" — or a name that is the model's own however spelt —
 // merges it by its own id again.
@@ -666,9 +668,9 @@ func renameModelPrefs(s *settings.Settings, from, to string) bool {
 	// well, and are not one of the per-model preference maps: they say
 	// which models are shown, not what a model is called or costs
 	// (and so is the order they are listed in, the ones picked for an agent
-	// shown only its picks, and the ones sent fast)
+	// shown only its picks, and the ones sent fast or Ultrafast)
 	hidden := false
-	for _, m := range []map[string][]string{s.HiddenModels, s.PickedModels, s.OrderedModels, s.FastPicks} {
+	for _, m := range []map[string][]string{s.HiddenModels, s.PickedModels, s.OrderedModels, s.FastPicks, s.UltraPicks} {
 		for _, ids := range m {
 			for i, id := range ids {
 				if rest, ok := strings.CutPrefix(id, from+"/"); ok {
@@ -730,6 +732,14 @@ func Labels(es []Entry) []string {
 // this one's Provider in model names Off leaves out as well (ARNO on
 // Discord: "· Relay A" and "· routing group" stayed under Off).
 func (e Entry) PlainName() string { return cmp.Or(e.Plain, e.Name) }
+
+// Thinks is whether the model thinks, as /v1/models says it and every
+// agent's list is told it: a model with levels, or one marked Reasoning
+// with a thinking switch alone. An export that read the levels alone
+// marked Trae CN's kimi-k3-max, which always thinks and has no levels
+// magpie knows, not reasoning for Pi, and `magpie pi effort high` was
+// clamped to off (#2380).
+func (e Entry) Thinks() bool { return e.Reasoning || len(e.Efforts) > 0 }
 
 // The ways the agents' lists name models (SuffixMode): every name with its
 // provider's after it, as by default; all but the names the user gave
@@ -802,6 +812,25 @@ func SetCodexAutoReview(id string) error {
 		return nil
 	}
 	s.CodexAutoReview = id
+	if err := settings.Save(s); err != nil {
+		return err
+	}
+	catalog.Touched()
+	return nil
+}
+
+// SetCodexAsyncCompact sets Codex's background compaction
+// (settings.CodexAsyncCompact) and the share of a model's window it starts
+// at, 1–100 or 0 for Codex's own, and has Codex's config written again.
+func SetCodexAsyncCompact(on bool, percent int) error {
+	if percent < 0 || percent > 100 {
+		return fmt.Errorf("Codex compacts in the background past 1 to 100%% of a model's window, not %d%%", percent)
+	}
+	s := settings.Load()
+	if s.CodexAsyncCompact == on && s.CodexAsyncCompactPercent == percent {
+		return nil
+	}
+	s.CodexAsyncCompact, s.CodexAsyncCompactPercent = on, percent
 	if err := settings.Save(s); err != nil {
 		return err
 	}
@@ -1236,13 +1265,8 @@ func (p Provider) asksOwnBackend() bool {
 		return false
 	}
 	switch p.Account.Agent {
-	case "claude", "cursor", "devin", "kiro", "zed", CommandCodePlanID:
+	case "claude":
 		return true
 	}
-	// Qoder is one backend however many sites it is signed in to, and the
-	// gateway's dispatch covers the whole family rather than the site the
-	// account was made on, so the family is asked of rather than one id of
-	// it: a name refused for the one subscription has to be refused for
-	// the other too, which is as much magpie's own there.
-	return slices.Contains(qoderAgents, p.Account.Agent)
+	return false
 }

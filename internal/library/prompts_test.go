@@ -170,6 +170,45 @@ func TestPromptTemplateSetupRestoresSelection(t *testing.T) {
 	}
 }
 
+// A snapshot keeps templates alongside develop's repaired instruction sets:
+// a legacy managed block is never captured as part of the user's set text.
+func TestPromptTemplateSnapshotKeepsCleanInstructions(t *testing.T) {
+	sandbox(t)
+	shared := "Keep user rules."
+	ok(t)(SaveInstructions(InstructionsChange{Shared: &shared, Agents: []string{"claude"}}))
+	ok(t)(SavePrompt(PromptChange{Name: "audit-code", Text: "Review this request.", Agents: []string{"pi"}}))
+	write(t, filepath.Join(Dir(), "instructions.md"), "Keep user rules.\n\n"+blockBegin+"\nLegacy duplicated rules.\n"+blockEnd+"\n")
+	s, err := Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Instructions.Shared != shared {
+		t.Fatalf("snapshot includes a legacy managed block: %q", s.Instructions.Shared)
+	}
+	if !Holds(s) {
+		t.Fatal("snapshot does not match its own instruction and template selections")
+	}
+	v, err := ReadPrompts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := v.Items[0].ID
+	if len(s.Prompts[id]) != 1 || s.Prompts[id][0] != "pi" {
+		t.Fatal("snapshot lost template selection")
+	}
+	ok(t)(SavePrompt(PromptChange{ID: id, Name: "audit-code", Text: "Review this request.", Agents: []string{}}))
+	changed := "Changed rules."
+	ok(t)(SaveInstructions(InstructionsChange{Shared: &changed, Agents: []string{"claude"}}))
+	ok(t)(Restore(s))
+	iv, err := ReadInstructions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if iv.Shared != shared || !Holds(s) {
+		t.Fatalf("restore lost instructions or template selections: %+v", iv)
+	}
+}
+
 func TestPromptTemplateNamesAndProjectConflicts(t *testing.T) {
 	h := sandbox(t)
 	for _, name := range []string{"", "a/b", "a b", "a\u200bb", "../a", strings.Repeat("审", 61)} {

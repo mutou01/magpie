@@ -132,6 +132,9 @@ export const FakePlugin = async ({ client }) => ({
           url: "https://fake.invalid/auth?where=" + inputs.where,
           instructions: "Paste the code",
           method: "code",
+          // team "cli-opened": the page is open already, as Grok Build's
+          // `grok login` opens its own on macOS and Windows
+          opened: inputs.team === "cli-opened",
           callback: async (code) =>
             (process.env.FAKE_SIGNIN && (await fetch(process.env.FAKE_SIGNIN + "/token").catch(() => {})), code === "good")
               ? { type: "success", refresh: "r-" + (inputs.team ?? "none"), access: "stale", expires: 0, ...fakeWho(inputs.team) }
@@ -196,7 +199,7 @@ export const FakePlugin = async ({ client }) => ({
         user: full ? "Full@Fake.example" : undefined,
         until: "2030-01-02T03:04:05Z",
         renew: "auto",
-        resets: full ? { count: 3, byWindow: true, fiveHour: 2, weekly: 1 } : undefined,
+        resets: full ? { count: 3, byWindow: true, fiveHour: 2, weekly: 1, team: true, each: [{ window: "weekly" }, { until: "2031-01-02T00:00:00Z", window: "fiveHour" }, { until: 1924992000, window: "fiveHour" }] } : undefined,
         windows: [
           { name: "5 hours", used: full ? 100 : 25, resetsAt: born + 3600e3, span: 5 * 3600, models: ["fake-claude"] },
           // 80 of its credits are lost in two days, after it resets (#2265)
@@ -240,6 +243,8 @@ export const FakePlugin = async ({ client }) => ({
   provider: {
     id: ID,
     models: async (p, { auth }) => {
+      // $FAKE_MODELS_LOG: each time the hook is asked is a line there
+      if (process.env.FAKE_MODELS_LOG) (await import("node:fs")).appendFileSync(process.env.FAKE_MODELS_LOG, "asked\n")
       if (auth?.refresh === "r-dead" || auth?.key === "dead") throw new Error("the vendor refused the sign-in")
       if (auth?.refresh === "r-models-gone") throw Object.assign(new Error("the vendor refused the sign-in"), { signIn: "expired" })
       // a sign-in past its time, said in words only, as Grok's plugin says it
@@ -273,6 +278,12 @@ export const FakePlugin = async ({ client }) => ({
         const sized = (id, name) => ({ ...p.models["fake-1"], id, name, api: { ...p.models["fake-1"].api, id } })
         p.models["fake-opus@300k"] = { ...sized("fake-opus@300k", "Fake Opus @ 300k"), fast: true }
         p.models["fake-opus@1m"] = sized("fake-opus@1m", "Fake Opus @ 1m")
+      }
+      // $FAKE_TIERS: fake-1 and fake-resp say the service tiers their vendor
+      // serves them at (#2514), one as an object as Codex's catalog writes it
+      if (process.env.FAKE_TIERS) {
+        p.models["fake-1"] = { ...p.models["fake-1"], serviceTiers: ["priority", { id: "ultrafast" }, "", 7, "priority"] }
+        if (p.models["fake-resp"]) p.models["fake-resp"] = { ...p.models["fake-resp"], serviceTiers: ["ultrafast"] }
       }
       // $FAKE_MODELS: the vendor's list, whose answer names one more model
       if (process.env.FAKE_MODELS && auth) {

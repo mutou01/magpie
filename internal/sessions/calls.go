@@ -10,8 +10,10 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yetone/magpie/internal/desktopdir"
@@ -92,6 +94,10 @@ type callFile struct {
 	CompactMs int64
 	// Codex
 	CX *cxRun
+	// Pi and omp
+	Pi *piCarry
+	// dsh
+	Dsh *dshCarry
 }
 
 // cxRun is where a rollout's read stands: what its lines have said so far.
@@ -144,11 +150,91 @@ func DesktopDataDirs() []string { return callDesktopDirs() }
 // Calls reads per-file request shards, separately from the session summaries.
 // Only changed files are scanned, and only a bounded number of parses stay in
 // memory. Conversation text is read by ContentOf when a detail is opened.
-func Calls(since time.Time) []Call { return callsFor(since, "") }
+//
+// Over a long history a read decodes every shard (#2278: 68k of them, 415
+// MB), so callers asking at once share one read of the same files, and only
+// one read of every file runs at a time: the Sessions page's requests
+// arriving together each held a whole read's calls, and the app grew to
+// 85 GB.
+func Calls(since time.Time) []Call { return sharedCalls(since, "") }
 
-func callsFor(since time.Time, session string) []Call {
-	files := callSources()
-	pruneCalls(files)
+// AgentCalls is Calls of one agent's session files only: Codex's model and
+// effort per thread need Codex's calls, not a read of every agent's.
+func AgentCalls(since time.Time, agent string) []Call { return sharedCalls(since, agent) }
+
+type callsKey struct {
+	since int64
+	zero  bool
+	agent string
+}
+
+type callsFlight struct {
+	done    chan struct{}
+	calls   []Call
+	waiters int
+}
+
+var (
+	callsFlights = struct {
+		sync.Mutex
+		on map[callsKey]*callsFlight
+	}{on: map[callsKey]*callsFlight{}}
+	// callsReading holds one read of every file at a time.
+	callsReading sync.Mutex
+	// readingCalls, in tests, is told each time Calls reads the files.
+	readingCalls func()
+)
+
+func sharedCalls(since time.Time, agent string) []Call {
+	key := callsKey{since.UnixNano(), since.IsZero(), agent}
+	callsFlights.Lock()
+	if fl := callsFlights.on[key]; fl != nil {
+		fl.waiters++
+		callsFlights.Unlock()
+		<-fl.done
+		return slices.Clone(fl.calls)
+	}
+	fl := &callsFlight{done: make(chan struct{})}
+	callsFlights.on[key] = fl
+	callsFlights.Unlock()
+	// Whatever happens to the read, the flight ends and its waiters go on.
+	defer func() {
+		callsFlights.Lock()
+		if callsFlights.on[key] == fl {
+			delete(callsFlights.on, key)
+		}
+		callsFlights.Unlock()
+		close(fl.done)
+	}()
+	func() {
+		callsReading.Lock()
+		defer callsReading.Unlock()
+		if readingCalls != nil {
+			readingCalls()
+		}
+		fl.calls = callsFor(since, "", agent)
+	}()
+	// none joins once the flight is out of the map, so the count read with
+	// that is every waiter
+	callsFlights.Lock()
+	if callsFlights.on[key] == fl {
+		delete(callsFlights.on, key)
+	}
+	shared := fl.waiters > 0
+	callsFlights.Unlock()
+	if shared { // the waiters copy fl.calls, so the caller's own is another
+		return slices.Clone(fl.calls)
+	}
+	return fl.calls
+}
+
+func callsFor(since time.Time, session, agent string) []Call {
+	all := callSources()
+	pruneCalls(all)
+	files := all
+	if agent != "" {
+		files = slices.DeleteFunc(slices.Clone(all), func(f file) bool { return f.agent != agent })
+	}
 	// Earlier files own messages copied into a resumed Claude session.
 	sort.Slice(files, func(i, j int) bool {
 		if !files[i].mod.Equal(files[j].mod) {
@@ -224,15 +310,16 @@ func callFiles() []file {
 	return out
 }
 
-// callSources are callFiles and the agents whose calls are read whole
-// rather than line by line: OpenCode's (#680) and ZCode's, whose calls are
-// rows of their database or their JSON files; DeepSeek Harness's, whose
-// session file is packed in frames and so cannot be read on from the middle
-// of one; and WorkBuddy's, whose usage lines repeat a reply's id as it goes
-// on, as CodeBuddy Code's do (#1779); and MiniMax Code's, whose messages
-// file a later generation of its history may replace (#1605); and Kimi
-// Code's, whose forks copy their parent's records (#1607). Every agent here
-// needs an entry in wholeCallReaders.
+// callSources are callFiles and the other agents' session files. Most are
+// read whole rather than line by line: OpenCode's (#680) and ZCode's, whose
+// calls are rows of their database or their JSON files; and WorkBuddy's, whose usage lines repeat a reply's id as it
+// goes on, as CodeBuddy Code's do (#1779); and MiniMax Code's, whose messages
+// file a later generation of its history may replace (#1605). Kimi Code's
+// (#1607), Pi's and omp's (#1951) are lines of a file only appended to,
+// read on as callFiles' are; DeepSeek Harness's, a file only appended to
+// that may be packed in zstd frames, is read on from the frame it was
+// left in (readDshCalls). Every agent here needs an entry in
+// wholeCallReaders, lineCallReaders or resumeCallReaders.
 func callSources() []file {
 	out := callFiles()
 	out = append(out, openCodeCallFiles()...)
@@ -283,7 +370,7 @@ func prepareCalls(f file, old *callFile) *callFile {
 
 	head := headOf(f.path)
 	var st *callFile
-	if old != nil && !packed(f.path) && f.size >= old.Size && old.Off <= f.size && sameHead(head, old.Head, old.HeadSize) && old.ContentHash != "" && prefixHash(f.path, old.Size) == old.ContentHash {
+	if old != nil && !packed(f.path) && f.size >= old.Size && old.Off <= f.size && sameHead(head, old.Head, old.HeadSize) && old.ContentHash != "" && prefixHash(f.path, old.Off) == old.ContentHash {
 		st = old.clone()
 	} else {
 		st = &callFile{Agent: f.agent}
@@ -314,6 +401,18 @@ func (st *callFile) clone() *callFile {
 		r.Contexts = maps.Clone(r.Contexts)
 		r.Timings = append([]cxCallTiming(nil), r.Timings...)
 		c.CX = &r
+	}
+	if st.Pi != nil {
+		p := *st.Pi
+		c.Pi = &p
+	}
+	if st.Dsh != nil {
+		d := *st.Dsh
+		if d.Tail != nil {
+			t := *d.Tail
+			d.Tail = &t
+		}
+		c.Dsh = &d
 	}
 	return &c
 }

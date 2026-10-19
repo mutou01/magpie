@@ -17,10 +17,12 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
+	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/codexcat"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/sessions"
 	"github.com/yetone/magpie/internal/settings"
@@ -204,6 +206,28 @@ func codexEfforts(ms []catalog.Model, model string) []Option {
 	return append([]Option{d}, static(e...)...)
 }
 
+// catalogParses is whether b is a model list magpie writes for Codex, the
+// shape Keep reads of the file there.
+func catalogParses(b []byte) bool {
+	var v struct {
+		Models []map[string]any `json:"models"`
+	}
+	return json.Unmarshal(b, &v) == nil
+}
+
+// writeOwnList writes the model list magpie keeps for Codex at path. A file
+// there that doesn't parse is copied aside first: Keep (#1450) holds
+// nothing of a file it can't read, so writing the new list over one would
+// end the keys the user added by hand with no copy (#2263's rule for
+// magpie's state files, which this file had missed). An error stops the
+// write.
+func writeOwnList(path string, b []byte) error {
+	if err := lastgood.KeepUnparsed(path, catalogParses); err != nil {
+		return err
+	}
+	return edit.WriteAtomic(path, b)
+}
+
 func codexIn(at place) *Agent {
 	dir := at.codexHome()
 	path := filepath.Join(dir, "config.toml")
@@ -257,6 +281,12 @@ func codexIn(at place) *Agent {
 		}
 		b := list()
 		if string(codexcat.Keep(cur, b)) == string(b) {
+			// one that doesn't parse is copied aside before it goes: Keep
+			// held nothing of it, so removing it outright would end the
+			// user's own keys with no copy
+			if err := lastgood.KeepUnparsed(catalogPath, catalogParses); err != nil {
+				return
+			}
 			os.Remove(catalogPath)
 		}
 	}
@@ -323,7 +353,7 @@ func codexIn(at place) *Agent {
 		case asProvider() && ownCatalog(get("model_catalog_json")):
 			b := ownList()
 			if cur, _ := edit.Read(catalogPath); string(cur) != string(b) {
-				return edit.WriteAtomic(catalogPath, b)
+				return writeOwnList(catalogPath, b)
 			}
 		case viaBase():
 			return codexStaleCache(filepath.Join(dir, "models_cache.json"), provider.CodexListTag())
@@ -357,12 +387,34 @@ func codexIn(at place) *Agent {
 		return dropSubEffort()
 	}
 	// magpie as a provider Codex can name; its threads started on magpie do
+	// Codex's background compaction, as Settings has it (#2490): written
+	// where Codex is routed through magpie, taken back where it isn't
+	asyncCompaction := func(routed bool) error {
+		s := settings.Load()
+		return codexAsyncSync(path, at.key("codex.async"), routed, s.CodexAsyncCompact, s.CodexAsyncCompactPercent)
+	}
+	// keptBearerToken is the table's bearer token when it is one the
+	// gateway takes: a caller key of the gateway's own the user put in
+	// magpie's token's place goes through magpie all the same, so theirs
+	// stays, as a sync keeps one (keyHolds); only a value the gateway would
+	// refuse is wired over (#2545). The sharing key magpie made is magpie's
+	// own, however much Authenticate takes it, so it never counts as theirs
+	// (Default): sharing going off brings gateway.Token back
+	keptBearerToken := func(table string) string {
+		tok := at.gwKey()
+		if t, err := edit.GetTOMLTable(path, table); err == nil {
+			if v := t["experimental_bearer_token"]; v != tok && keyHolds(v, tok) && !access.Default(v) {
+				return v
+			}
+		}
+		return tok
+	}
 	putProvider := func() error {
-		return edit.SetTOMLTable(path, "model_providers."+magpieID,
-			edit.KV{Path: "name", Value: "magpie"},
-			edit.KV{Path: "base_url", Value: at.v1()},
-			edit.KV{Path: "wire_api", Value: "responses"},
-			edit.KV{Path: "experimental_bearer_token", Value: at.gwKey()},
+		kvs := []edit.KV{
+			{Path: "name", Value: "magpie"},
+			{Path: "base_url", Value: at.v1()},
+			{Path: "wire_api", Value: "responses"},
+			{Path: "experimental_bearer_token", Value: keptBearerToken("model_providers." + magpieID)},
 			// Codex offers its built-in image tool (image_gen.imagegen) and
 			// the other OpenAI-provider tools only to a provider it reads as
 			// the OpenAI actor: one that does not require OpenAI auth but
@@ -375,8 +427,17 @@ func codexIn(at place) *Agent {
 			// gets the header set there, the user's others kept; written
 			// inline beside that table it defined http_headers twice and
 			// every model switch failed (wztlink1013 on Discord).
-			edit.KV{Path: "http_headers", Value: edit.Inline{{Path: "x-openai-actor-authorization", Value: "magpie"}}},
-		)
+			{Path: "http_headers", Value: edit.Inline{{Path: "x-openai-actor-authorization", Value: "magpie"}}},
+		}
+		// the table's capabilities, the user's or the background
+		// compaction's, aren't lost as it is written again
+		if caps := codexProviderCaps(path); caps != nil {
+			kvs = append(kvs, edit.KV{Path: "capabilities", Value: caps})
+		}
+		if err := edit.SetTOMLTable(path, "model_providers."+magpieID, kvs...); err != nil {
+			return err
+		}
+		return asyncCompaction(true)
 	}
 	hasProvider := func() bool {
 		t, err := edit.GetTOMLTable(path, "model_providers."+magpieID)
@@ -504,7 +565,7 @@ func codexIn(at place) *Agent {
 				edit.KV{Path: "name", Value: id},
 				edit.KV{Path: "base_url", Value: at.v1()},
 				edit.KV{Path: "wire_api", Value: "responses"},
-				edit.KV{Path: "experimental_bearer_token", Value: at.gwKey()},
+				edit.KV{Path: "experimental_bearer_token", Value: keptBearerToken("model_providers." + id)},
 			); err != nil {
 				return err
 			}
@@ -980,7 +1041,7 @@ func codexIn(at place) *Agent {
 			if err := putProvider(); err != nil {
 				return err
 			}
-			if err := edit.WriteAtomic(catalogPath, ownList()); err != nil {
+			if err := writeOwnList(catalogPath, ownList()); err != nil {
 				return err
 			}
 			// a thread started on Codex's built-in provider stays on it when
@@ -1114,6 +1175,9 @@ func codexIn(at place) *Agent {
 		},
 		OwnVia: codexOwnViaMagpie,
 		Sync: func() error {
+			if err := asyncCompaction(routed()); err != nil {
+				return err
+			}
 			// model_provider = "magpie" left with its table gone (taken by
 			// another tool, or a hand edit), which keeps Codex from loading
 			// its config at all, connected to magpie or not (Tystem on
@@ -1177,7 +1241,7 @@ func codexIn(at place) *Agent {
 				}
 				b := ownList()
 				if cur, _ := edit.Read(catalogPath); string(cur) != string(b) {
-					if err := edit.WriteAtomic(catalogPath, b); err != nil {
+					if err := writeOwnList(catalogPath, b); err != nil {
 						return err
 					}
 				}
@@ -1196,6 +1260,14 @@ func codexIn(at place) *Agent {
 			// synced, a vendor's list fetched) keeps an effort it takes
 			if isMagpie(get("model")) {
 				return settle()
+			}
+			// on a model of Codex's own (the app's last pick), the app's
+			// picker still lists magpie's: the efforts they take now are
+			// offered there too. A group that came to take max kept only
+			// high in the app, with no control, while the config was on
+			// Codex's own model (#2127)
+			if routed() {
+				return codexEnableEfforts(path, magpieModels("codex"))
 			}
 			return nil
 		},
@@ -1224,7 +1296,7 @@ func codexIn(at place) *Agent {
 				if err != nil {
 					return err.Error()
 				}
-				if t["base_url"] != at.v1() || t["experimental_bearer_token"] != at.gwKey() || t["wire_api"] != "responses" {
+				if t["base_url"] != at.v1() || !keyHolds(t["experimental_bearer_token"], at.gwKey()) || t["wire_api"] != "responses" {
 					return "Codex's [model_providers.magpie] no longer points at magpie's gateway (" + at.v1() + ")"
 				}
 				if c := get("model_catalog_json"); !ownCatalog(c) {
@@ -1784,8 +1856,10 @@ func codexChatGPT(dir string) bool {
 			Access string `json:"access_token"`
 		} `json:"tokens"`
 	}
-	b, err := os.ReadFile(filepath.Join(dir, "auth.json"))
-	if err != nil || json.Unmarshal(b, &a) != nil {
+	// auth.json, or the macOS keychain item when Codex's config.toml
+	// keeps the sign-in there (#2367)
+	b, ok := provider.CodexSignIn(dir)
+	if !ok || json.Unmarshal(b, &a) != nil {
 		return false
 	}
 	return a.Tokens.Access != ""

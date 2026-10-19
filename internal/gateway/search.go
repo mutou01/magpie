@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -35,7 +36,11 @@ import (
 // what a search found.
 const searchRounds = 6
 
-const searchTimeout = 2 * time.Minute
+// searchTimeout is how long a search's vendor has to answer; a model's
+// search (modelSearch) has it from when its request went out, each try's
+// own, and searchWaitMost in all, its waits for a slot or a resting
+// provider with it (sideDeadline, #2318).
+const searchTimeout, searchWaitMost = 2 * time.Minute, 5 * time.Minute
 
 // searchingKey marks a search magpie asks for itself, which must not
 // search by way of another model again.
@@ -101,8 +106,14 @@ func searchesItself(p provider.Provider, proto provider.Protocol) bool {
 	saidTo := p.Searches && (proto == provider.Anthropic || proto == provider.Responses) && p.Base(proto) != ""
 	if p.Account != nil {
 		// Grok by its id: moved to its plugin, its account is the plugin's;
-		// its plugin beside the built-in (grok-plugin) by the plugin's id
-		return (p.Account.Agent == "codex" || p.ID == "grok" || p.PluginProvider() == "grok") && proto == provider.Responses ||
+		// its plugin beside the built-in (grok-plugin) by the plugin's id.
+		// Copilot's /responses runs web_search itself for every model it
+		// serves there: gpt-5.3-codex, gpt-5.4-mini, gpt-6-luna, grok-4.7
+		// and mai-code-1.1-flash each answered a request offering it with
+		// web_search_call items and cited pages (2026-10-17, a real
+		// account). Translated for magpie's search instead, Codex's every
+		// turn on Copilot lost the relay (echo_ts on Discord).
+		return (p.Account.Agent == "codex" || p.Account.Agent == "copilot" || p.ID == "grok" || p.PluginProvider() == "grok") && proto == provider.Responses ||
 			p.IsPlugin() && saidTo
 	}
 	if saidTo {
@@ -205,11 +216,22 @@ var searchHosts = map[provider.Protocol][]string{
 // searchAsked is whether a body offers the model web search, looked for
 // cheaply before it is parsed.
 func searchAsked(proto provider.Protocol, body []byte) bool {
-	if !strings.Contains(string(body), "web_search") && !strings.Contains(string(body), "oogle_search") && !strings.Contains(string(body), "googleSearch") {
+	// bytes, not string(body): each conversion copied the whole body, three
+	// times a request (a 200KB body: 640KB and 3ms)
+	if !bytes.Contains(body, []byte("web_search")) && !bytes.Contains(body, []byte("oogle_search")) && !bytes.Contains(body, []byte("googleSearch")) {
 		return false
 	}
 	req, err := parse(proto, body)
 	return err == nil && req.WebSearch
+}
+
+// searchedForIt is whether a relayed request's web search is done by magpie
+// for the provider, which can't be relayed: a body offering it to a model
+// that doesn't search by itself. What is known of the provider is asked
+// first: Codex offers web_search on every turn, and each relayed turn was
+// parsed whole to learn it, for a provider that searches by itself.
+func searchedForIt(p provider.Provider, from provider.Protocol, model string, body []byte) bool {
+	return (from == provider.Chat && !p.IsRemoteMagpie() || !searchesModel(p, from, model)) && searchAsked(from, body)
 }
 
 // searcher is the model magpie searches with: the one Settings names, while
@@ -238,6 +260,10 @@ func searchRank(p provider.Provider) int {
 		return 0
 	case p.Account != nil && p.Account.Agent == "codex":
 		return 1
+	case p.Account != nil && p.Account.Agent == "copilot":
+		// it searches for its own models only: another's searches would
+		// spend its premium requests, which no one asked for
+		return -1
 	case searchesItself(p, provider.Anthropic):
 		return 2
 	case searchesItself(p, provider.Responses):
@@ -586,7 +612,7 @@ const searchersInTurn = 3
 
 // modelSearch searches the web with the searcher's model; one magpie
 // picked that fails or finds nothing gives way to the next searcher magpie
-// would pick, all of them within searchTimeout. One Settings names gives
+// would pick, all of them within searchWaitMost. One Settings names gives
 // way to none: the search APIs, when set up, search in its place
 // (webSearch), and Settings says it didn't search (SearcherFailed). Handed
 // on, a search for Grok, picked, went to Codex's gpt-6-astra, a pricier
@@ -596,7 +622,7 @@ func (s *Server) modelSearch(ctx context.Context, query string) (string, []Hit, 
 	if !ok {
 		return "", nil, errNoSearcher
 	}
-	ctx, cancel := context.WithTimeout(context.WithValue(ctx, searchingKey{}, true), searchTimeout)
+	ctx, cancel := sideDeadline(context.WithValue(ctx, searchingKey{}, true), "search", searchTimeout, searchWaitMost)
 	defer cancel()
 	type pick struct{ id, model string }
 	tried := []pick{{p.ID, model}}
@@ -727,7 +753,7 @@ func searcherSpent(p provider.Provider, model string) error {
 	}
 	when := ""
 	if !back.IsZero() {
-		when = " until " + back.Local().Format("Jan 2 15:04")
+		when = " until " + heldClock(back, time.Now())
 	}
 	return fmt.Errorf("%s/%s: out of its allowance%s, not asked", p.ID, model, when)
 }
@@ -802,8 +828,8 @@ func (s *Server) searchWith(ctx context.Context, p provider.Provider, model, que
 		if out.Error != nil && out.Error.Message != "" {
 			msg = out.Error.Message
 		}
-		if ctx.Err() != nil {
-			msg = "no answer in " + searchTimeout.String()
+		if t, ok := sideTimeout(ctx); ok {
+			msg = t.Error()
 		}
 		return "", nil, fmt.Errorf("%s/%s: %s", p.ID, model, msg)
 	}
@@ -934,6 +960,13 @@ func (s *Server) searchRounds(ctx context.Context, q *Request, tool string, in <
 		mine, theirs, gap := false, false, said
 		var stop string
 		for ev := range in {
+			if ev.Kind == KAlive {
+				// nothing of the reply: no part of what it collects
+				if !send(ev) {
+					return
+				}
+				continue
+			}
 			col.add(ev)
 			switch ev.Kind {
 			case KStart:
@@ -945,7 +978,7 @@ func (s *Server) searchRounds(ctx context.Context, q *Request, tool string, in <
 				started = true
 			case KUsage:
 				this.add(ev.Usage)
-				ev.Usage = ev.Usage.plus(before, true)
+				ev.Usage = ev.Usage.carryUpdate(this, before)
 			case KText:
 				if gap && ev.Text != "" {
 					// what it says after a search goes on from what it
@@ -1068,13 +1101,13 @@ func (s *Server) askTranslated(p provider.Provider, to provider.Protocol, model 
 		if !sse {
 			b, _ := io.ReadAll(io.LimitReader(rd, 1<<20))
 			res.Body.Close()
-			return nil, 502, p.Name + " did not stream: " + provider.APIError(b, "unexpected reply")
+			return nil, 502, p.Name + " " + didNotStream + ": " + provider.APIError(b, "unexpected reply")
 		}
 		events := make(chan Event, 16)
 		go func() {
 			defer close(events)
 			defer res.Body.Close()
-			dec := decoder(actual)
+			dec := decoderFor(p, actual)
 			send := func(ev Event) error {
 				select {
 				case events <- ev:
@@ -1084,15 +1117,25 @@ func (s *Server) askTranslated(p provider.Provider, to provider.Protocol, model 
 				}
 			}
 			var failed error
-			err := readSSE(rd, func(_, data string) error {
+			told := time.Now() // when the reader was last sent anything
+			err := readSSEAlive(rd, func(_, data string) error {
 				if err := dec(data, func(ev Event) {
 					if failed == nil {
 						failed = send(ev)
+						told = time.Now()
 					}
 				}); err != nil {
 					return err
 				}
 				return failed
+			}, func() {
+				// a provider still queued or thinking — keepalives,
+				// response.in_progress — is heard from with nothing to
+				// translate: the reader hears that it goes on (#2316)
+				if failed == nil && time.Since(told) >= keepaliveGap {
+					failed = send(Event{Kind: KAlive})
+					told = time.Now()
+				}
 			})
 			if err != nil && failed == nil && ctx.Err() == nil {
 				send(Event{Kind: KError, Text: p.Name + ": " + err.Error()})

@@ -46,6 +46,8 @@ var Vars = []string{
 	"PRIME_AGENT_CODING_AGENT_DIR",
 	// StepCode: config root resolution and folder overrides
 	"STEP_CODING_AGENT_DIR", "STEPCODE_CONFIG_DIR",
+	// MothX's config folder ($MOTHX_DIR/settings.json)
+	"MOTHX_DIR",
 	// omp
 	"OMP_PROFILE",
 	// Qoder's two builds, the global site's and China's
@@ -75,6 +77,9 @@ var Vars = []string{
 	"REASONIX_HOME",
 	// Reasonix's state folder, where it reads REASONIX.md
 	"REASONIX_STATE_HOME",
+	// the skills CLI's lock ($XDG_STATE_HOME/skills/.skill-lock.json), which
+	// the Library groups skills by; the desktop app has it from the login shell
+	"XDG_STATE_HOME",
 	// PI-Desktop's data folder, where Sessions reads its chat titles
 	"PI_DESKTOP_DATA_DIR",
 	// Mister Morph's config file

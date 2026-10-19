@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -272,6 +273,13 @@ type Provider struct {
 	// See SkipsRedaction.
 	Unredacted bool `json:"unredacted,omitempty"`
 
+	// InsecureTLS has magpie take the certificate of the provider's own
+	// HTTPS host as it is, unchecked (#2383, fangzhengjin: a vLLM on the
+	// LAN, Ollama behind a self-signed cert). Only a provider the user
+	// added takes it (TakesInsecureTLS), and only for the hosts of its own
+	// base URLs (UncheckedHosts); see Via.
+	InsecureTLS bool `json:"insecureTLS,omitempty"`
+
 	// Proxy is the proxy magpie's requests to this provider go through
 	// (#237: Codex through one, a vendor at home without): "" follows
 	// the global one (Settings' Proxy, the environment's, the system's),
@@ -313,6 +321,10 @@ type Provider struct {
 	// magpie knows need neither.
 	BalanceURL  string `json:"balanceURL,omitempty"`
 	BalancePath string `json:"balancePath,omitempty"`
+	// BalanceMethod is how BalanceURL is asked: "" (or GET), or POST with
+	// no body, for an endpoint that answers only a POST (#2368). Any other
+	// is refused when the balance is read (balanceMethodOf).
+	BalanceMethod string `json:"balanceMethod,omitempty"`
 	// BalanceToken is what a vendor tells the whole account's balance to,
 	// where a key is told only what is left on itself: AiHubMix's system
 	// access token, or a new-api relay's for its /api/user/self named in
@@ -795,6 +807,9 @@ func Save(p Provider) error {
 			}
 			return errors.New("a provider needs a base URL")
 		}
+		if p.InsecureTLS && !p.TakesInsecureTLS() {
+			return fmt.Errorf("%s is a preset's: only a provider you added with your own base URL can skip the certificate check", p.Name)
+		}
 		if strings.Contains(p.Decide, WorkspaceID) {
 			return errors.New("Bailian's decision model is asked at your workspace's host: give its workspace ID (workspace=… or the editor's Workspace ID), or pick the Token Plan")
 		}
@@ -816,6 +831,13 @@ func Save(p Provider) error {
 		if p.Was == nil {
 			p.Was = was.Was
 		}
+		if sameStored(*was, p) {
+			// Save pressed on an editor left as it was: providers.json
+			// would be written byte for byte as it is, and its write
+			// handed the catalog to every agent again (agent.SyncCatalog),
+			// seconds of CPU with many agents set up (#1962, witt-bit)
+			return nil
+		}
 		f.Providers[i] = p
 	} else {
 		f.Providers = append(f.Providers, p)
@@ -829,6 +851,16 @@ func Save(p Provider) error {
 		syncClaudeProxyEnvNow()
 	}
 	return nil
+}
+
+// sameStored is whether a and b are written to providers.json alike.
+func sameStored(a, b Provider) bool {
+	x, err := json.Marshal(a)
+	if err != nil {
+		return false
+	}
+	y, err := json.Marshal(b)
+	return err == nil && bytes.Equal(x, y)
 }
 
 // listedWith is what p.PickedFrom is saved as: none without picks; what was
@@ -1107,7 +1139,12 @@ func Delete(id string) error {
 		return fmt.Errorf("no provider %q", id)
 	}
 	f.Providers = keep
-	return store(f)
+	if err := store(f); err != nil {
+		return err
+	}
+	// its StepFun sign-in goes with it, not to a provider added later
+	// under the same id
+	return forgetStepFun(id)
 }
 
 // keyOptional is true for local servers, which usually have no key.
@@ -1196,7 +1233,7 @@ func normalize(p Provider) Provider {
 	if (p.Preset == OMLXPreset || p.Preset == MLXServePreset) && p.Decide == "" && p.Chat != "" {
 		p.Decide = p.Chat
 	}
-	if p.Routing != Ordered && p.Routing != Rotate && p.Routing != LeastUsed && p.Routing != Pace && p.Routing != Weighted {
+	if p.Routing != Ordered && p.Routing != Rotate && p.Routing != LeastUsed && p.Routing != Pace && p.Routing != Weighted && !PluginRouting(p.Routing) {
 		p.Routing = ""
 	}
 	if !slices.Contains(Affinities, p.Affinity) {
@@ -1230,6 +1267,8 @@ func normalize(p Provider) Provider {
 	p.azureEndpoints()
 	// OpenCode Zen's or Go's other APIs, beside the one it was given (#1215)
 	p.openCodeEndpoints()
+	// Bedrock Mantle's other APIs, beside the one it was given
+	p.mantleEndpoints()
 	// a preset's provider keeps its headers too: the preset gives the
 	// endpoints and catalog, the headers say which workspace or app it is
 	p.Headers = cleanHeaders(p.Headers)
@@ -1469,11 +1508,11 @@ func openAIModel(model string) bool {
 // OpenAI's API or Copilot's; Anthropic's Messages for a Claude model
 // where that is served; Chat where that is served. "" when every
 // request is translated anyway: a sign-in served through its agent's own
-// API (Claude Code's binary, Cursor, Devin, Kiro, Code Assist).
+// API (Claude Code's binary, Devin, Code Assist).
 func (p Provider) Native(model string) Protocol {
 	if p.Account != nil {
 		switch p.Account.Agent {
-		case "claude", "cursor", "devin", "kiro":
+		case "claude", "devin":
 			return ""
 		}
 	}
@@ -1530,18 +1569,94 @@ func (p Provider) Where() string {
 // which routes and caches by conversation and turns away requests that do
 // not name one in x-opencode-session.
 func (p Provider) IsOpenCode() bool {
-	h := p.Host()
-	return h == "opencode.ai" || strings.HasSuffix(h, ".opencode.ai")
+	return OpenCodeURL("//" + p.Host()) // its port, if it names one, aside
 }
 
-// IsBedrock reports whether the provider is Amazon Bedrock's runtime: made
-// from its preset, or at its host.
+// IsBedrock reports whether the provider is Amazon Bedrock: its runtime
+// (bedrock-runtime.{region}.amazonaws.com) or its Mantle endpoint
+// (bedrock-mantle.{region}.api.aws), made from either's preset or at
+// either's host. The two take the same Bedrock API key and share what
+// Bedrock asks of a request: x-api-key alone on Messages, its own names
+// for Anthropic's betas, no metadata.user_id, max_completion_tokens on
+// chat completions, Claude on Messages and OpenAI's GPT models on
+// Responses first. What only the runtime does (no list of models) is the
+// preset's; what only Mantle does is IsBedrockMantle's.
 func (p Provider) IsBedrock() bool {
-	if p.Preset == "bedrock" {
+	if p.Preset == "bedrock" || p.IsBedrockMantle() {
 		return true
 	}
 	h := p.Host()
 	return strings.HasPrefix(h, "bedrock-runtime.") && strings.HasSuffix(h, ".amazonaws.com")
+}
+
+// IsBedrockMantle reports whether the provider is Amazon Bedrock's Mantle
+// endpoint (@marktoown on X): made from its preset, or added by its
+// address at bedrock-mantle.{region}.api.aws.
+func (p Provider) IsBedrockMantle() bool {
+	return p.Preset == "bedrock-mantle" || mantleHost(p.Host())
+}
+
+// mantleHost is a host of Bedrock's Mantle endpoint.
+func mantleHost(h string) bool {
+	return strings.HasPrefix(h, "bedrock-mantle.") && strings.HasSuffix(h, ".api.aws")
+}
+
+// mantleOpenAI is a model Mantle serves on its OpenAI APIs under
+// /openai/v1 rather than /v1, as the model's card says: OpenAI's closed
+// GPT models (GPT-6 Sol, GPT-5.5) and xAI's Grok. gpt-oss, Gemma and the
+// other open models are at /v1. Asked at the other one, Mantle answers
+// "model `x` isn't supported on this route".
+func mantleOpenAI(model string) bool {
+	return bedrockGPT(model) || strings.HasPrefix(strings.ToLower(model), "xai.")
+}
+
+// MantleBase is the base a request for model goes to on Mantle's chat
+// completions or Responses API, given a Mantle provider's base for it
+// (IsBedrockMantle): one ending /v1 or /openai/v1 goes at whichever of the
+// two serves the model, or at the other when other is set (the model was
+// refused at the first, so the gateway learned its prefix). A base ending
+// otherwise, one the user typed, is given back as it is.
+func MantleBase(base, model string, other bool) string {
+	root, ok := strings.CutSuffix(strings.TrimRight(strings.TrimSpace(base), "/"), "/v1")
+	if !ok {
+		return base
+	}
+	root = strings.TrimSuffix(root, "/openai")
+	if mantleOpenAI(model) != other {
+		return root + "/openai/v1"
+	}
+	return root + "/v1"
+}
+
+// mantleEndpoints fills in the APIs of Bedrock's Mantle endpoint a
+// provider added by its address was saved without: chat completions and
+// Responses at /v1, Messages at /anthropic, as the preset gives them. A
+// chat or Responses URL given at /openai/v1 is moved to /v1, where Mantle
+// lists its models (/openai/v1/models is 404); the gateway still asks each
+// model at the prefix that serves it (MantleBase). Any other URL the user
+// gave an API keeps it.
+func (p *Provider) mantleEndpoints() {
+	if p.Preset != "" && p.Preset != "bedrock-mantle" {
+		return
+	}
+	root := ""
+	for _, b := range []string{p.Chat, p.Responses, p.Anthropic} {
+		if u, err := url.Parse(strings.TrimSpace(b)); err == nil && u.Scheme != "" && mantleHost(strings.ToLower(u.Hostname())) {
+			root = u.Scheme + "://" + u.Host
+			break
+		}
+	}
+	if root == "" {
+		return
+	}
+	for _, b := range []*string{&p.Chat, &p.Responses} {
+		if strings.TrimRight(strings.TrimSpace(*b), "/") == root+"/openai/v1" {
+			*b = root + "/v1"
+		}
+	}
+	p.Chat = cmp.Or(p.Chat, root+"/v1")
+	p.Responses = cmp.Or(p.Responses, p.Chat)
+	p.Anthropic = cmp.Or(p.Anthropic, root+"/anthropic")
 }
 
 // bedrockClaude is a Bedrock id of a Claude model: a model id

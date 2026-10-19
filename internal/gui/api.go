@@ -40,6 +40,7 @@ import (
 	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/library"
 	"github.com/yetone/magpie/internal/mcpauth"
+	"github.com/yetone/magpie/internal/middleware"
 	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/profile"
@@ -350,6 +351,9 @@ type settingsJSON struct {
 	// Builtins are the built-in plugins: each one's switch, whether it
 	// runs and what of it is in use (builtins.go)
 	Builtins []builtinJSON `json:"builtins"`
+	// JSRoutings are the routings JS gateway plugins serve now
+	// ("<plugin>/<name>"), for the routing pickers
+	JSRoutings []middleware.Routing `json:"jsRoutings"`
 	// PublicURL is MAGPIE_PUBLIC_URL while other machines are let in
 	// (shared, or MAGPIE_ADDR on the network): where they reach the
 	// gateway, shown beside the local address agents here are pointed at
@@ -497,6 +501,8 @@ type searchAPIJSON struct {
 	Keys  int    `json:"keys,omitempty"`
 	Pick  string `json:"pick,omitempty"`
 	Quota bool   `json:"quota,omitempty"`
+	// Off: switched off, kept but never asked (#2286)
+	Off bool `json:"off,omitempty"`
 }
 
 // searchChoiceJSON is a provider that can search for a model that can't,
@@ -533,7 +539,7 @@ func searchState(s *settingsJSON) {
 	}
 	s.SearchAPIs, s.SearchVendors = []searchAPIJSON{}, []searchVendorJSON{}
 	for _, a := range provider.StoredSearchAPIs() {
-		j := searchAPIJSON{Vendor: a.Vendor, Name: a.Name(), URL: a.URL, Ready: a.Ready(), Keys: len(a.Keys()), Pick: a.Pick, Quota: gateway.CanReadSearchQuota(a)}
+		j := searchAPIJSON{Vendor: a.Vendor, Name: a.Name(), URL: a.URL, Ready: a.Ready(), Keys: len(a.Keys()), Pick: a.Pick, Quota: gateway.CanReadSearchQuota(a), Off: a.Off}
 		if a.Key != "" {
 			j.Key = a.MaskedKey()
 		}
@@ -581,6 +587,7 @@ func settingsState() settingsJSON {
 	s := settingsJSON{Settings: settings.Load(), Version: Version, Dir: tilde(settings.Dir()), Portable: settings.Portable() != "", Gateway: gateway.URL()}
 	s.AddrEnv = os.Getenv("MAGPIE_ADDR")
 	s.Builtins = builtinsState()
+	s.JSRoutings = middleware.Routings()
 	s.OnNetwork = gateway.OnNetwork()
 	if list, env := gateway.AllowIPs(); env {
 		s.AllowIPsEnv, s.AllowIPsFromEnv = os.Getenv(gateway.AllowIPsEnv), list
@@ -789,6 +796,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/", devPage(revalidated(http.FileServer(http.FS(staticFS())))))
 	devRoutes(mux)
+	pluginPageRoutes(mux)
 	// boot.js hands the page the saved language and theme before it paints:
 	// they came only with the settings, so the tabs showed English first
 	mux.HandleFunc("GET /boot.js", func(rw http.ResponseWriter, r *http.Request) {
@@ -1159,6 +1167,10 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		if _, sent := fields["refusalRetries"]; !sent {
 			in.RefusalRetries = cur.RefusalRetries
 		}
+		// nor whether updates download by themselves (#2296)
+		if _, sent := fields["noAutoDownload"]; !sent {
+			in.NoAutoDownload = cur.NoAutoDownload
+		}
 		in.AgentOrder, in.AgentsHidden, in.AgentsShown = cur.AgentOrder, cur.AgentsHidden, cur.AgentsShown
 		in.Window, in.WindowMaximised = cur.Window, cur.WindowMaximised // the window's own, as it was last resized
 		// and what other pages keep here: which models an agent is shown, and
@@ -1173,6 +1185,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		in.PickedModels = cur.PickedModels       // "only models I pick" (#1337)
 		in.OwnModelsHidden = cur.OwnModelsHidden // an agent's own models left out (#1642)
 		in.FastPicks = cur.FastPicks             // switched in the agents' pickers (#954)
+		in.UltraPicks = cur.UltraPicks           // and sent Ultrafast (#1954)
 		in.AgentEfforts = cur.AgentEfforts       // picked in an agent's row (#1003)
 		in.PluginCheckins = cur.PluginCheckins   // set on its own (plugin-checkin below)
 		in.PluginOptions = cur.PluginOptions     // set on its own (plugin-option below)
@@ -1183,6 +1196,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		in.Port = cur.Port                                 // set on its own (port below), which moves the gateway
 		in.CORSOrigins = cur.CORSOrigins                   // set on its own (cors below)
 		in.AllowIPs = cur.AllowIPs                         // set on its own (allowips below)
+		in.FetchPrivate = cur.FetchPrivate                 // in settings.json only
 		in.GitHubToken = cur.GitHubToken                   // set on its own (github-token below), never sent to the page
 		in.RequestArchive = cur.RequestArchive             // the Gateway page's, set on its own
 		in.RequestArchiveMaxMB = cur.RequestArchiveMaxMB   // in settings.json only
@@ -1205,6 +1219,8 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		in.CodexAgentsV1 = cur.CodexAgentsV1
 		in.FullContext = cur.FullContext // set on its own (full-context below)
 		in.CompactAt = cur.CompactAt     // and so is the threshold
+		// Codex's background compaction, set on its own (codex-async-compact below)
+		in.CodexAsyncCompact, in.CodexAsyncCompactPercent = cur.CodexAsyncCompact, cur.CodexAsyncCompactPercent
 		// Claude Desktop's list, set in its row on the Agents page
 		in.DesktopLongest = cur.DesktopLongest
 		// and the Get started card put away, from the card itself
@@ -1273,9 +1289,10 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		// the cards the menu bar shows, any of them (TrayUsage is only the first),
 		// how often, with their logos or not, beside the bird or not, and
-		// with their Pace numbers or not
+		// with their Pace numbers or not, with magpie's totals' cost or not
 		if (!slices.Equal(settings.Load().TrayUsages, cur.TrayUsages) || in.TrayUsageEvery != cur.TrayUsageEvery ||
-			in.TrayNoLogos != cur.TrayNoLogos || in.TrayNoBird != cur.TrayNoBird || in.TrayPace != cur.TrayPace) && onTrayUsage != nil {
+			in.TrayNoLogos != cur.TrayNoLogos || in.TrayNoBird != cur.TrayNoBird || in.TrayPace != cur.TrayPace ||
+			in.TrayNoCost != cur.TrayNoCost) && onTrayUsage != nil {
 			onTrayUsage()
 		}
 		// an alert turned on or moved is looked at now, the Mac asked for its
@@ -1478,6 +1495,28 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			err = provider.SetCompactAt(*in.At)
 		}
 		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, settingsState())
+	})
+	// Codex's background compaction (#2490): on or off, and the share of
+	// a model's window it starts at (0: Codex's own, 65), written into the
+	// config Codex is routed through
+	mux.HandleFunc("POST /api/settings/codex-async-compact", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			On      bool
+			Percent *int
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		pct := settings.Load().CodexAsyncCompactPercent
+		if in.Percent != nil {
+			pct = *in.Percent
+		}
+		if err := provider.SetCodexAsyncCompact(in.On, pct); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -2087,20 +2126,28 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		writeJSON(rw, settingsState())
 	})
-	// a web search API added, given a new key or address, or taken away
+	// a web search API added, given a new key or address, switched on or
+	// off, or taken away; or the APIs put in a new order (#2286)
 	mux.HandleFunc("POST /api/settings/search-api", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Vendor, Key, URL, Pick string
 			Remove                 bool
+			On                     *bool
+			Arrange                []string
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			fail(rw, err)
 			return
 		}
 		var err error
-		if in.Remove {
+		switch {
+		case in.Arrange != nil:
+			err = provider.ArrangeSearchAPIs(in.Arrange)
+		case in.Remove:
 			err = provider.RemoveSearchAPI(in.Vendor)
-		} else {
+		case in.On != nil:
+			err = provider.SwitchSearchAPI(in.Vendor, *in.On)
+		default:
 			err = provider.SetSearchAPI(provider.SearchAPI{Vendor: in.Vendor, Key: in.Key, URL: in.URL, Pick: in.Pick})
 		}
 		if err != nil {
@@ -2183,7 +2230,19 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	})
 	agentModelsAPI(mux)
 	devListen(mux)
-	return held(mux)
+	return noFramedAPI(held(mux))
+}
+
+// noFramedAPI turns away a request for /api that no page of the window's
+// own makes (apiFramed): a plugin's page in its frame among them.
+func noFramedAPI(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if apiFramed(r) {
+			http.Error(rw, "magpie's API answers magpie's own window only", http.StatusForbidden)
+			return
+		}
+		h.ServeHTTP(rw, r)
+	})
 }
 
 // held has a page's reads share one build of the catalog, which every row

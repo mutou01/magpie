@@ -91,23 +91,33 @@ func dshAt(at place) *Agent {
 	if dir == "" {
 		dir = filepath.Join(at.home, ".dsh")
 	}
+	// DeepSeek Harness Desktop, on this machine (a distro has none)
+	desktop := func() bool { return at.spell == nil && (&Agent{ID: "dsh"}).HasApp() }
 	path := filepath.Join(dir, "config.yaml")
 	if files := dshProfiles(dir); len(files) > 0 {
 		path = files[0]
+	} else if desktop() {
+		path = dshDesktopFile(dir)
 	}
 	return &Agent{
 		ID: "dsh", Name: "DeepSeek Harness", Icon: "deepseek-color", Aliases: []string{"deepseek-harness"}, Spelled: prefixed,
 		UA:  []string{"deepseek-harness"},
 		Bin: "dsh", Dir: dir, Path: path,
+		// the desktop app installed and not opened yet has no ~/.dsh (#2279)
+		sign: desktop,
 		Sync: func() error { return dshSync(dir, gw()) },
 		Notice: func() string {
 			var notes []string
-			if Running(`DeepSeek Harness\.app/`, `(^|/)dsh( |$)`) {
-				if len(dshProfiles(dir)) > 0 {
-					notes = append(notes, noticeDsh1.String())
-				} else {
-					notes = append(notes, noticeDsh2.String())
-				}
+			if desktop() && dshUnopened(dir) {
+				// nothing of dsh's runs on it yet to be restarted
+				notes = append(notes, noticeDsh5.String())
+			} else if len(dshProfiles(dir)) > 0 {
+				// a session dsh already has keeps the model it was on,
+				// running or not: agent-default-model is read for new
+				// ones only (#2359)
+				notes = append(notes, noticeDsh1.String())
+			} else if Running(`DeepSeek Harness\.app/`, `(^|/)dsh( |$)`) {
+				notes = append(notes, noticeDsh2.String())
 			}
 			if dshSearchesHere(dir) && !gateway.CanSearch() {
 				notes = append(notes, noticeDsh3.String())
@@ -152,10 +162,21 @@ func dshAt(at place) *Agent {
 			}
 			return dshEnv(dir, gw(), false, false)
 		},
+		// what magpie made for a desktop app never opened goes (#2279)
+		Restore: func() error { return dshTidyUnopened(dir) },
 		Fields: []Field{{
 			Key: "model", Label: "model",
 			Get: func() string { return dshGet(dir) },
-			Set: func(v string) error { return dshSet(dir, v, gw()) },
+			Set: func(v string) error {
+				// the desktop app not opened yet: its profile is made as
+				// it makes it, and it keeps the patch list it finds (#2279)
+				if v != "" && len(dshProfiles(dir)) == 0 && desktop() {
+					if err := dshMakeDesktop(dir); err != nil {
+						return err
+					}
+				}
+				return dshSet(dir, v, gw())
+			},
 			Options: func(map[string]string) []Option {
 				own := append([]Option{}, dshModels...)
 				// since 0.1.5 dsh's own go to DeepSeek on its own key, its
@@ -201,6 +222,79 @@ func dshProfiles(dir string) []string {
 		}
 	}
 	return append(web, rest...)
+}
+
+// dshProfileTemplate is the patch list dsh writes for a new profile
+// (PROFILE_PATCH_TEMPLATE in DeepSeek Harness Desktop 0.2.0-rc.2's
+// lib/main.js, initProfile).
+const dshProfileTemplate = "# Your patch layer for this dsh profile, applied after every bundle layer:\n" +
+	"# a top-level YAML array of loader patch entries (id-targeted config\n" +
+	"# overrides, disables, and insert lists; `!!js` expressions allowed).\n" +
+	"[]\n"
+
+// dshDesktopFile is the desktop app's profile's patch list: the app's
+// profile is $DSH_HOME/profiles/desktop (resolveDesktopPaths).
+func dshDesktopFile(dir string) string {
+	return filepath.Join(dir, "profiles", "desktop", "cordis.patch.yml")
+}
+
+// dshMakeDesktop makes the desktop app's patch list, as dsh's template,
+// for an app installed and never opened (#2279, liangjinyuan-sihan): with
+// no profile at all magpie had nowhere to write, and DeepSeek Harness
+// Desktop has no ~/.dsh until its first start. The app's initProfile
+// writes each of a profile's files only where it is missing ("Existing
+// files are never touched"), so on its first start it adds its
+// package.json and pnpm-workspace.yaml beside this one and keeps
+// magpie's entries. The folder is owner-only, as the app makes it.
+func dshMakeDesktop(dir string) error {
+	f := dshDesktopFile(dir)
+	if err := os.MkdirAll(filepath.Dir(f), 0o700); err != nil {
+		return err
+	}
+	if _, err := os.Stat(f); err == nil {
+		return nil
+	}
+	return os.WriteFile(f, []byte(dshProfileTemplate), 0o644)
+}
+
+// dshUnopened says the desktop app's profile is one magpie made and the
+// app hasn't started on yet: it has no package.json, which the app's first
+// start writes.
+func dshUnopened(dir string) bool {
+	f := dshDesktopFile(dir)
+	if !isFile(f) {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(filepath.Dir(f), "package.json"))
+	return errors.Is(err, os.ErrNotExist)
+}
+
+// dshTidyUnopened takes out, on Disconnect, what magpie made for a desktop
+// app never opened since: the profile's patch list back to dsh's template
+// with nothing beside it, and the folders that leaves empty. A patch list
+// holding anything else, or a profile the app has started on, stays.
+func dshTidyUnopened(dir string) error {
+	f := dshDesktopFile(dir)
+	if !dshUnopened(dir) {
+		return nil
+	}
+	b, err := os.ReadFile(f)
+	if err != nil || strings.ReplaceAll(string(b), "\r\n", "\n") != dshProfileTemplate {
+		return nil
+	}
+	if es, err := os.ReadDir(filepath.Dir(f)); err != nil || len(es) != 1 {
+		return nil
+	}
+	if err := os.Remove(f); err != nil {
+		return err
+	}
+	// only folders left empty: os.Remove refuses one that isn't
+	for _, d := range []string{filepath.Dir(f), filepath.Join(dir, "profiles")} {
+		if os.Remove(d) != nil {
+			break
+		}
+	}
+	return nil
 }
 
 // dshHomePatch is dsh's home patch layer, $DSH_HOME/cordis.patch.yml: it is
@@ -348,14 +442,24 @@ func dshParse(path, raw string) (head []string, items []dshItem, err error) {
 	if b, ok := edit.BlockList(raw); ok {
 		raw = b
 	}
+	opened := false // a "---" or "[]" came before the first entry
 	for _, l := range splitLinesKeep(raw) {
 		t := strings.TrimSpace(l)
 		switch {
 		case strings.HasPrefix(l, "- ") || l == "-":
 			items = append(items, dshItem{lines: []string{l}})
 		case len(items) == 0:
-			if t != "" && !strings.HasPrefix(t, "#") && t != "[]" {
+			// "---" is YAML's document start marker: a patch list may open
+			// with one (#2667), and it stays in the head it is written back
+			// with, so the file keeps it. Only at the left edge and before
+			// anything but comments: a second one starts a second
+			// document, which is no list magpie can edit.
+			marker := dshDocStart(l) && !opened
+			if t != "" && !strings.HasPrefix(t, "#") && t != "[]" && !marker {
 				return nil, nil, fmt.Errorf("%s is not a list of entries magpie can edit", path)
+			}
+			if t != "" && !strings.HasPrefix(t, "#") {
+				opened = true
 			}
 			if t != "[]" {
 				head = append(head, l)
@@ -1135,6 +1239,7 @@ func dshPutRoute(items []dshItem, on bool, models []catalog.Model, gw string) ([
 			// what dsh's Models page added to it (a default level, headers)
 			// stays; magpie's fields are put as they are now
 			if cur := yamlKey(providers, k.key); cur != nil && cur.Kind == yaml.MappingNode {
+				dshKeepCompat(cur, &route)
 				for j := 0; j+1 < len(route.Content); j += 2 {
 					yamlSetKey(cur, route.Content[j].Value, route.Content[j+1])
 				}
@@ -1163,6 +1268,45 @@ func dshPutRoute(items []dshItem, on bool, models []catalog.Model, gw string) ([
 	}
 	items[i] = dshItem{id: dshPiRow, magpie: items[i].magpie, lines: lines}
 	return items, nil
+}
+
+// dshKeepCompat carries the compat switches set by hand in dsh's Models page
+// (maxTokensField, say) from route cur, as it is in the file, into route,
+// as magpie writes it now (#2504, h4rk8s): a model that works only with
+// them would fail again after each sync. They stay on the same model of a
+// route still on the same protocol; a model new to the route, or a route
+// whose protocol changed, starts without them. A switch magpie sets itself
+// is put as magpie has it now.
+func dshKeepCompat(cur, route *yaml.Node) {
+	api := yamlKey(cur, "api")
+	if api == nil || yamlKey(route, "api") == nil || api.Value != yamlKey(route, "api").Value {
+		return
+	}
+	old := map[string]*yaml.Node{}
+	if ms := yamlKey(cur, "models"); ms != nil && ms.Kind == yaml.SequenceNode {
+		for _, m := range ms.Content {
+			c := yamlKey(m, "compat")
+			if id := yamlKey(m, "id"); id != nil && c != nil && c.Kind == yaml.MappingNode {
+				old[id.Value] = c
+			}
+		}
+	}
+	ms := yamlKey(route, "models")
+	if ms == nil || ms.Kind != yaml.SequenceNode {
+		return
+	}
+	for _, m := range ms.Content {
+		id := yamlKey(m, "id")
+		if id == nil || old[id.Value] == nil {
+			continue
+		}
+		c := yamlMapping(m, "compat")
+		for j := 0; j+1 < len(old[id.Value].Content); j += 2 {
+			if yamlKey(c, old[id.Value].Content[j].Value) == nil {
+				yamlSetKey(c, old[id.Value].Content[j].Value, old[id.Value].Content[j+1])
+			}
+		}
+	}
 }
 
 // dshPiRoute is magpie's route as llm-pi-ai takes a custom provider (the
@@ -2036,8 +2180,26 @@ func dshSettingsEndpoint(path string) bool {
 
 // what dsh says after a change (notice.go)
 var (
-	noticeDsh1 = newNotice("New dsh sessions start on this; one already open keeps its model until you pick another in it. A dsh started with -p or in a terminal reads it at start-up.")
+	noticeDsh1 = newNotice("New dsh sessions start on this. A session made before keeps its model, open now or reopened later, until you pick another in it with /model or the model button by its message box. A dsh started with -p or in a terminal reads it at start-up.")
 	noticeDsh2 = newNotice("dsh reads its config at start-up — restart open dsh sessions to use this.")
 	noticeDsh3 = newNotice("dsh's web search goes through magpie, which has nothing to search with yet: set up a provider that searches by itself (DeepSeek, Claude, Codex, …) or a search API under Settings › Web search.")
 	noticeDsh4 = newNotice("~/.dsh/settings.yaml sets its own DeepSeek endpoint or key, which dsh puts over magpie's; clear it in dsh's Models page to go through magpie.")
+	noticeDsh5 = newNotice("DeepSeek Harness Desktop hasn't been opened yet: it starts on this the first time it opens.")
 )
+
+// dshDocStart says whether l is YAML's document start marker, "---" at the
+// left edge with at most a comment after it.
+func dshDocStart(l string) bool {
+	r, ok := strings.CutPrefix(l, "---")
+	if !ok {
+		return false
+	}
+	if r == "" {
+		return true
+	}
+	if r[0] != ' ' && r[0] != '\t' {
+		return false
+	}
+	r = strings.TrimSpace(r)
+	return r == "" || strings.HasPrefix(r, "#")
+}

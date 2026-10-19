@@ -23,21 +23,22 @@ const PLUGINS = [
   { id: "gateway", name: "Gateway page", sub: "The gateway's state and keys, how to connect a client, its models and recent calls", one: "1 gateway key", many: "{n} gateway keys" },
   { id: "groups", name: "Routing groups", sub: "Several models agents pick as one: each request goes to the right one, and to the next when one fails", one: "1 group in use", many: "{n} groups in use" },
   { id: "library", name: "Library", sub: "Instructions, MCP servers, skills and hooks, kept once and given to every agent", one: "1 item given to agents", many: "{n} items given to agents" },
-  { id: "middleware", name: "Gateway middleware", sub: "Run the JavaScript middleware plugins on agents' requests and replies", one: "1 middleware on", many: "{n} middleware on" },
+  { id: "middleware", name: "JS gateway plugins", sub: "Run the JavaScript gateway plugins: middleware on agents' requests and replies, routings and usage observers", one: "1 gateway plugin on", many: "{n} gateway plugins on" },
   { id: "otel", name: "Observability", sub: "Send each request's traces and metrics to an OpenTelemetry collector, such as Langfuse", one: "Sending to a collector", many: "Sending to a collector" },
   { id: "redact", name: "Privacy masking", sub: "Secrets, personal data and your own words go to vendors as placeholders, and come back as they were", one: "Masking is on", many: "Masking is on" },
   { id: "rotation", name: "Routing strategies", sub: "The routings besides Smart: In order, In turn, Least used first, Weekly pace and By weight", one: "1 provider or group routed so", many: "{n} providers and groups routed so" },
   { id: "routing", name: "Routing", sub: "Each request as the gateway routes it, the accounts it weighed and what each answered, and your routing groups", one: "1 group in use", many: "{n} groups in use" },
   { id: "search", name: "Web search", sub: "Models that can't search the web search with a provider that can, or a search API", one: "1 search source set up", many: "{n} search sources set up" },
   { id: "sessions", name: "Sessions", sub: "Your agents' past conversations: read, search, resume and export them", one: "Recording gateway conversations", many: "Recording gateway conversations" },
+  { id: "tools", name: "Plugin tools", sub: "Offer the tools your plugins give to every agent, as an MCP server", one: "1 plugin gives tools", many: "{n} plugins give tools" },
   { id: "usage", name: "Usage", sub: "Your allowances, what was spent and on what, each request, and what filled the context window" },
   { id: "warmups", name: "Warm-up and check-in", sub: "Start a subscription's usage window at a time you pick, and claim vendors' daily check-in credits", one: "1 warm-up or check-in on", many: "{n} warm-ups and check-ins on" },
 ];
-// a new install's (the Essentials preset): all off but the Gateway, Routing
+// the Essentials preset, picked by the user: all off but the Gateway, Routing
 // and Usage pages, the routing strategies, the gateway middleware, privacy
-// masking, web search and key limits, which are essential, and two routing
-// groups the user made
-const START = { budget: [true, 0], gateway: [true, 0], groups: [false, 2], library: [false, 0], middleware: [true, 0], otel: [false, 0], redact: [true, 0], rotation: [true, 0], routing: [true, 0], search: [true, 0], sessions: [false, 0], usage: [true, 0], warmups: [false, 0] };
+// masking, web search, key limits and plugin tools, which are essential,
+// and two routing groups the user made
+const START = { budget: [true, 0], gateway: [true, 0], groups: [false, 2], library: [false, 0], middleware: [true, 0], otel: [false, 0], redact: [true, 0], rotation: [true, 0], routing: [true, 0], search: [true, 0], sessions: [false, 0], tools: [true, 0], usage: [true, 0], warmups: [false, 0] };
 
 // the Gateway page's settings, as pluginrt.SchemaOf makes them
 const GATEWAY_SCHEMA = {
@@ -171,13 +172,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.deepEqual([rt.on, rt.disabled], ["true", false], `${where}: the Routing page, on`);
         const ro = rows.find((r) => r.id === "rotation");
         assert.deepEqual([ro.on, ro.disabled], ["true", false], `${where}: the routing strategies, on`);
-        for (const id of ["budget", "middleware", "redact", "search"]) {
+        for (const id of ["budget", "middleware", "redact", "search", "tools"]) {
           const r = rows.find((r) => r.id === id);
           assert.deepEqual([r.on, r.disabled], ["true", false], `${where}: ${id}, on`);
         }
         const us = rows.find((r) => r.id === "usage");
         assert.deepEqual([us.on, us.disabled], ["true", false], `${where}: the Usage page, on`);
-        for (const r of rows.filter((r) => !["budget", "groups", "gateway", "middleware", "redact", "rotation", "routing", "search", "usage"].includes(r.id))) assert.deepEqual([r.on, r.disabled, r.why], ["false", false, ""], `${where}: ${r.id}`);
+        for (const r of rows.filter((r) => !["budget", "groups", "gateway", "middleware", "redact", "rotation", "routing", "search", "tools", "usage"].includes(r.id))) assert.deepEqual([r.on, r.disabled, r.why], ["false", false, ""], `${where}: ${r.id}`);
         await page.locator('#builtinList [data-id="groups"] [role="switch"]').click({ force: true });
         await page.waitForTimeout(100);
         assert.deepEqual(posts, [], `${where}: a locked switch posts nothing`);

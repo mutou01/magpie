@@ -29,6 +29,7 @@ import (
 	"github.com/yetone/magpie/internal/shortcut"
 	"github.com/yetone/magpie/internal/stats"
 	"github.com/yetone/magpie/internal/update"
+	"github.com/yetone/magpie/internal/webview2env"
 )
 
 //go:embed tray.png
@@ -281,11 +282,17 @@ func (h *host) zoomWindows() {
 // windowsOptions are the app's Windows options. Portable, WebView2 keeps
 // its profile in data\webview2: left to Wails it is %APPDATA%\magpie.exe,
 // a folder a portable magpie must not leave behind (#508). Installed, it
-// stays there, so what the pages kept isn't lost.
+// stays there, so what the pages kept isn't lost. The browser arguments
+// the user set in WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, which Wails' loader
+// blanks before WebView2 can read them, are merged into Wails' own (#2753).
 func windowsOptions() application.WindowsOptions {
+	disabled, enabled, other := webView2Args(webview2env.Args)
 	return application.WindowsOptions{
 		DisableQuitOnLastWindowClosed: true,
 		WebviewUserDataPath:           appdir.WebView(),
+		DisabledFeatures:              disabled,
+		EnabledFeatures:               enabled,
+		AdditionalBrowserArgs:         other,
 	}
 }
 
@@ -311,6 +318,8 @@ func Run(version string, showMain bool, link string) error {
 	if runningAlready(showMain || OpenPanel, link) {
 		return nil
 	}
+	// before the first webview, which opens WebKit's data where programName says
+	keepWebData()
 	go func() {
 		if err := registerScheme(); err != nil {
 			log.Println("magpie:// links:", err)
@@ -350,8 +359,7 @@ func Run(version string, showMain bool, link string) error {
 		Assets:         application.AssetOptions{Handler: ownWindow(handler)},
 		Mac:            application.MacOptions{ActivationPolicy: dockPolicy(settings.Load().Dock)},
 		Windows:        windowsOptions(),
-		// the tray stays when lightweight mode has let both windows go
-		Linux: application.LinuxOptions{DisableQuitOnLastWindowClosed: true},
+		Linux:          linuxOptions(),
 		// A version downloaded but not restarted into is installed on the
 		// way out, so the next launch is the new one.
 		// Quitting doesn't come back to main on a Mac (NSApp terminate:
@@ -577,6 +585,13 @@ func Run(version string, showMain bool, link string) error {
 	return h.app.Run()
 }
 
+// linuxOptions: the tray stays when lightweight mode has let both windows
+// go, and the program name is the window's Wayland app_id and X11 WM_CLASS,
+// which the desktop entry's StartupWMClass names (#2626).
+func linuxOptions() application.LinuxOptions {
+	return application.LinuxOptions{DisableQuitOnLastWindowClosed: true, ProgramName: programName}
+}
+
 // singleInstance makes a second launch hand over to this one, off the Mac.
 // The id covers the config dir, so a sandboxed HOME runs on its own, but
 // not the executable: two copies of magpie on one config (one autostarted
@@ -678,6 +693,14 @@ func panelOptions(goos, theme string) application.WebviewWindowOptions {
 			// out of sight, until the user swiped back (#2141).
 			CollectionBehavior: application.MacWindowCollectionBehaviorCanJoinAllSpaces |
 				application.MacWindowCollectionBehaviorFullScreenAuxiliary,
+			// and shown without activating magpie, as a menu bar extra's
+			// panel is: an ordinary window's Focus activated the app, and
+			// the Mac then took the user to the Space of magpie's other
+			// windows (the desktop the main window is on), off the
+			// full-screen app's, panel and all (#2141, witt-bit, on
+			// v0.1.1246). A non-activating panel still takes the keyboard.
+			WindowClass:      application.MacWindowClassPanel,
+			PanelPreferences: application.MacPanelPreferences{NonActivating: true},
 		},
 		Windows: application.WindowsWindow{HiddenOnTaskbar: true},
 	}

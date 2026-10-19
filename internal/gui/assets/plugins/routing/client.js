@@ -104,7 +104,10 @@ function routingPage(part) {
   const steps = el("ol", "rt-steps");
   // what the request's prompt held: its context window (context.js)
   const ctxBox = el("div", "rt-ctx");
-  log.append(logHead, steps, ctxBox);
+  // the request's own request and response, opened from its head
+  const bodies = el("div", "rt-bodies");
+  bodies.hidden = true;
+  log.append(logHead, steps, bodies, ctxBox);
   const off = el("div", "none rt-off");
   // over the stage while a replay plays: the time it is replaying, which
   // requests are in flight then, and where it is among them
@@ -268,6 +271,29 @@ function routingPage(part) {
   byWidth(list, { max460: (w) => w <= 460, max560: (w) => w <= 560 });
   byWidth(more, { max520: (w) => w <= 520, min1150: (w) => w >= 1150 });
   for (const col of [colA, colB]) byWidth(col, { max440: (w) => w <= 440, max760: (w) => w <= 760 });
+  // A request's numbers on a line of their own, under where it went, where
+  // they no longer fit their column on one line (#2288): a list of about
+  // 800px, as beside the accounts on a laptop's screen, cut where the request
+  // went to "Op… · deepseek-v4.1-fla…" and broke its numbers over two lines.
+  // Measured on one line each time, the mark taken off and put back before
+  // the frame is drawn: measured under, they can fit their column's share
+  // and still wrap beside a wide model, and the row would flip each frame.
+  // The rows are shorter on one line, so what scrolls keeps its place.
+  let metaFitting = 0;
+  const metaFit = () => { if (!metaFitting) metaFitting = requestAnimationFrame(() => {
+    metaFitting = 0;
+    if (colA.classList.contains("max760") || !reqs.offsetParent) return;
+    const kept = [];
+    for (let p = reqs; p; p = p.parentElement) if (p.scrollTop) kept.push([p, p.scrollTop]);
+    colA.classList.remove("meta-under");
+    const wraps = [...reqs.querySelectorAll(".rt-req .meta:not([hidden])")].some((m) => {
+      const k = m.children;
+      return k.length > 1 && k[k.length - 1].getBoundingClientRect().top - k[0].getBoundingClientRect().top > 2;
+    });
+    colA.classList.toggle("meta-under", wraps);
+    for (const [p, top] of kept) if (p.scrollTop !== top) p.scrollTop = top;
+  }); };
+  new ResizeObserver(metaFit).observe(colA);
 
   const path = () => { const p = document.createElementNS(NS, "path"); wires.appendChild(p); return p; };
   const setText = (e, s) => { if (e.textContent !== s) e.textContent = s; };
@@ -425,6 +451,13 @@ function routingPage(part) {
     // language is already spoken
     weight: ["By weight", "Requests spread over the keys by the weight set beside each: a key weighing 3 takes three requests for every one a key weighing 1 takes, evenly over a few requests. One that fails is passed over while it rests, and the others share its requests; a conversation stays with its key as Stays says."],
   };
+  // modeOf: a routing's name and what it does, a JS gateway plugin's
+  // ("<plugin>/<name>", app.js jsRoutings) as it is named, served or not
+  const modeOf = (r) => MODES[r] || (r && jsRoutings(r).find(([id]) => id === r)?.slice(1, 3)) || MODES[""];
+  // withJS: routing options and the JS gateway plugins' after them, with
+  // saved when none serves it now; one of opts' own (a group's Manual) is
+  // not a plugin's
+  const withJS = (opts, saved) => [...opts, ...jsRoutings(saved || "").filter(([id]) => !opts.some(([o]) => o === id)).map(([id, n, , js]) => [id, n, js])];
   const GROUP_ORDER = "In order: member by member, the first model the group names until it can't answer, each over its own accounts or keys as its provider routes them.";
   // a group routed by weight (#1910): its members, not its keys
   const GROUP_WEIGHT = "By weight: each model takes its share of the requests by the weight set beside it — one weighing 3 three for every one a model weighing 1 takes, spread out rather than in bursts. One resting after a failure leaves the round and the others share its requests; the next model is the fallback when one fails.";
@@ -526,6 +559,7 @@ function routingPage(part) {
     if (!f) return t("Nothing could take {model}.", { model: r.model });
     const w = who(f);
     if (r.sealedTask && r.leadAccount === f.id) return t("{who} goes first: it answered the parent agent and may be needed to read this encrypted task.", { who: w });
+    if (r.compaction && r.order.length === 1) return t("{who} compacted this conversation natively, and only it can read that compaction, so the conversation stays on it: other accounts aren't asked. Start a new conversation to use them.", { who: w });
     if (r.order.length === 1) {
       if (f.rest) return t("{who} is the only one, so it's tried though it is resting.", { who: w });
       return f.kind === "account" ? t("{who} is the only account on for {model} — nothing to choose between.", { who: w, model: wentOn(r) })
@@ -730,7 +764,7 @@ function routingPage(part) {
     if (f?.via?.length && r.group) {
       const names = f.via.map((id) => r.group.subs?.find((s) => s.id === id)?.name || id);
       const inner = r.group.subs?.find((s) => s.id === f.via[f.via.length - 1]);
-      out.push(t("{who} is one of {path}, a group in {name}; that group routes {mode}.", { who: who(f), path: names.join(" › "), name: r.group.name, mode: t((MODES[inner?.routing || ""] || MODES[""])[0]).toLowerCase() }));
+      out.push(t("{who} is one of {path}, a group in {name}; that group routes {mode}.", { who: who(f), path: names.join(" › "), name: r.group.name, mode: t(modeOf(inner?.routing || "")[0]).toLowerCase() }));
     }
     return out;
   }
@@ -815,6 +849,10 @@ function routingPage(part) {
     if (tr.fixed) return r.effort && r.effort !== tr.effort
       ? t("{level} reasoning, fixed on this model in the group; {agent} asked for {asked}", { level: tr.effort, agent, asked: r.effort })
       : t("{level} reasoning, fixed on this model in the group", { level: tr.effort });
+    // the rule that sent the turn here asks its model for one (#2633)
+    if (tr.ruleEffort) return r.effort && r.effort !== tr.effort
+      ? t("{level} reasoning, set by the rule; {agent} asked for {asked}", { level: tr.effort, agent, asked: r.effort })
+      : t("{level} reasoning, set by the rule", { level: tr.effort });
     if (tr.picked) return r.effort && r.effort !== tr.effort
       ? t("{level} reasoning, picked for the turn; {agent} asked for {asked}", { level: tr.effort, agent, asked: r.effort })
       : t("{level} reasoning, picked for the turn", { level: tr.effort });
@@ -831,9 +869,70 @@ function routingPage(part) {
     const agent = agentName(r.agent);
     return said + (/[。！？]$/.test(said) ? "" : " ") + (tr.fixed
       ? t("The group fixes this model at {fixed} reasoning, in place of the {asked} {agent} asked for.", { fixed: tr.fixed, asked: r.effort, agent })
+      : tr.ruleEffort
+      ? t("The rule asks this model for {level} reasoning, in place of the {asked} {agent} asked for.", { level: tr.effort, asked: r.effort, agent })
       : tr.picked
       ? t("The turn's pick replaced the {asked} {agent} asked for.", { asked: r.effort, agent })
       : t("{level} is the model's nearest to the {asked} {agent} asked for.", { level: tr.effort, asked: r.effort, agent }));
+  }
+
+  // where a try's time went (gateway.TryNet, Discord Magic_zero: the
+  // gateway looked slow): magpie's own, the network's on the way out, and
+  // the vendor's, from the try's start to its end, the parts that took
+  // none left out. Only a try whose request magpie sent itself has it: one
+  // that went out some other way (a plugin's own fetch), or a trace from
+  // before magpie measured it, says nothing more than the time it took.
+  const ms1 = (n) => n < 10 ? t("{n} ms", { n: (Math.round(n * 10) / 10).toString() }) : took(Math.round(n));
+  function timeParts(tr) {
+    const n = tr.net, out = [], add = (who, label, v) => { if (v >= 0.1) out.push({ who, label, v }); };
+    if (!n) return out;
+    add("magpie", "Waiting for a slot", tr.queued || 0);
+    add("magpie", "In magpie", n.own || 0);
+    add("net", "Requests before it", n.before || 0);
+    // what's left of the pool's wait once a dial is out is a rounding
+    if ((n.pool || 0) >= 1) add("net", "Waiting for a connection", n.pool);
+    add("net", "DNS", n.dns || 0);
+    add("net", "Connecting", n.connect || 0);
+    add("net", "TLS", n.tls || 0);
+    add("net", "Sending", n.send || 0);
+    add("vendor", "Vendor (first byte)", n.wait || 0);
+    const head = n.head || 0;
+    if (tr.ttft > 0) {
+      add("vendor", "First token", tr.ttft - head);
+      add("vendor", "Streaming", (tr.ms || 0) - tr.ttft);
+    } else add("vendor", "Reading the reply", (tr.ms || 0) - head);
+    return out;
+  }
+  const WHO = { magpie: "magpie {ms}", net: "network {ms}", vendor: "vendor {ms}" };
+  function timeSaid(tr) {
+    const parts = timeParts(tr);
+    if (!parts.length) return "";
+    const sum = {};
+    for (const p of parts) sum[p.who] = (sum[p.who] || 0) + p.v;
+    const whose = Object.keys(WHO).filter((k) => sum[k] > 0).map((k) => t(WHO[k], { ms: ms1(sum[k]) }));
+    return [t("Where the time went"), whose.join(" · "), parts.map((p) => t(p.label) + " " + ms1(p.v)).join(" · ")].filter(Boolean).join(": ");
+  }
+  function timeElement(tr) {
+    const parts = timeParts(tr), total = parts.reduce((a, p) => a + p.v, 0) || 1;
+    const box = el("div", "rt-time");
+    const head = el("div", "rt-time-head", t("Where the time went"));
+    const sum = {};
+    for (const p of parts) sum[p.who] = (sum[p.who] || 0) + p.v;
+    for (const k of Object.keys(WHO)) if (sum[k] > 0) head.append(el("span", "rt-time-who " + k, t(WHO[k], { ms: ms1(sum[k]) })));
+    const bar = el("div", "rt-time-bar");
+    bar.setAttribute("aria-hidden", "true");
+    const list = el("ul", "rt-time-parts");
+    for (const p of parts) {
+      const seg = el("span", p.who);
+      seg.style.flexGrow = String(p.v / total);
+      seg.title = t(p.label) + " " + ms1(p.v);
+      bar.append(seg);
+      const li = el("li", p.who);
+      li.append(el("span", "k", t(p.label)), el("span", "v", ms1(p.v)));
+      list.append(li);
+    }
+    box.append(head, bar, list);
+    return box;
   }
 
   // what the gateway adds to WorkBuddy's "unapproved channel" refusal
@@ -860,6 +959,11 @@ function routingPage(part) {
     if (w && tr.auto?.length) name = `${who(w)} (${w.model} → ${tr.auto[tr.auto.length - 1].model})`;
     if (tr.effort && tr.fail !== "prompt") name += " " + t("at {level} reasoning", { level: tr.effort });
     if (!tr.done) return t("{who} is answering…", { who: name });
+    // what came of a try is what the gateway did next, never guessed from
+    // where it stood in the order: a later try is the request going on,
+    // as the gateway appends one only as it asks it, and with none the
+    // error ended the request, the agent's once the route is done (#2281)
+    const next = r.tries[i + 1], nw = next && tried(r, next);
     // a Codex reset spent by itself: with Codex's own sign-in the one try
     // it was spent for is the one that then answered
     const spent = tr.reset && tr.status < 400
@@ -881,12 +985,10 @@ function routingPage(part) {
         { who: name, status: tr.status, account: tr.reset.who, agent });
     if (tr.fail === "canceled")
       return t("{agent} canceled the request while {who} was answering: nobody failed, so nobody rests and nobody else is asked.", { who: name, agent });
-    if (tr.fail === "auth") {
-      const next = r.tries[i + 1], nw = next && tried(r, next);
+    if (tr.fail === "auth")
       return next
         ? t("{who} could not authenticate. Sign in again in magpie; this login is not retried. The request went to {next}.", { who: name, next: nw ? who(nw) : t("the next") })
         : t("{who} could not authenticate. Sign in again in magpie; this login is not retried. No other account could answer.", { who: name });
-    }
     if (tr.fail === "foreign")
       return t("{who} couldn't read the reasoning another account wrote earlier in this conversation, so it is asked again without it, before any of the reply reaches {agent}.", { who: name, agent });
     if (tr.fail === "floor")
@@ -910,7 +1012,9 @@ function routingPage(part) {
         ? t("{who} answered {status}: its plan doesn't take the reasoning effort asked for, so another account goes on with it before any of the reply reaches {agent}. {who} serves other efforts, so it doesn't rest.", { who: name, status: tr.status, agent })
         : t("{who} answered {status}: its plan doesn't take the reasoning effort asked for, and no account left that does could answer, so {agent} gets an error saying so.", { who: name, status: tr.status, agent });
     if (tr.fail === "slow")
-      return t("{who} hadn't begun answering after {ms}, so the request went on to the next before any of it reached {agent}. Nothing is wrong with {who}, so it doesn't rest.", { who: name, ms: took(tr.ms), agent });
+      return !next && r.done
+        ? t("{who} hadn't begun answering after {ms}, and nobody is left to try, so {agent} gets the error.", { who: name, ms: took(tr.ms), agent })
+        : t("{who} hadn't begun answering after {ms}, so the request went on to the next before any of it reached {agent}. Nothing is wrong with {who}, so it doesn't rest.", { who: name, ms: took(tr.ms), agent });
     if (tr.fail === "proxy")
       return r.tries[i + 1]
         ? t("{who}: the proxy magpie goes through didn't take the connection, so the request never reached the vendor and goes on to the next. Nothing is wrong with {who}, so it doesn't rest: once the proxy is up it is asked first again.", { who: name })
@@ -926,13 +1030,26 @@ function routingPage(part) {
     if (tr.again)
       return t("{who} answered {status} · {fail}, and nobody else is left to ask — a failure that may pass, so it is tried again in {d}, before any of the reply reaches {agent}.",
         { who: name, status: tr.status, fail: failWord(tr.fail), d: took(tr.again), agent });
-    if (tr.rest) {
-      const next = r.tries[i + 1], nw = next && tried(r, next);
-      return t("{who} answered {status} · {fail}. {how}; the request goes on to {next} before any of the reply reaches {agent}.",
-        { who: name, status: tr.status, fail: failWord(tr.fail), how: restHow(tr.rest, at(tr.start) + (tr.ms || 0)), next: nw ? who(nw) : t("the next"), agent });
-    }
-    const last = i >= r.order.length - 1;
-    return last
+    // the last one left out of its allowance, after another failed
+    // otherwise: the agent was told that one's error (Try.Earlier)
+    if (tr.earlier && !next)
+      return t("{who} answered {status} and nobody is left to try. {agent} gets the error an earlier try gave, not this used-up allowance, so it doesn't stop as if every account were out.", { who: name, status: tr.status, agent });
+    // the error came, and nothing after it is known yet
+    if (!next && !r.done) return t("{who} answered {status}.", { who: name, status: tr.status });
+    const how = tr.rest && restHow(tr.rest, at(tr.start) + (tr.ms || 0));
+    if (next)
+      return tr.rest
+        ? t("{who} answered {status} · {fail}. {how}; the request goes on to {next} before any of the reply reaches {agent}.",
+          { who: name, status: tr.status, fail: failWord(tr.fail), how, next: nw ? who(nw) : t("the next"), agent })
+        : t("{who} answered {status}, and the request goes on to {next} before any of the reply reaches {agent}. {who} doesn't rest for it.",
+          { who: name, status: tr.status, next: nw ? who(nw) : t("the next"), agent });
+    if (tr.rest)
+      return t("{who} answered {status} · {fail}. {how}; nobody is left to try, so {agent} gets the error.",
+        { who: name, status: tr.status, fail: failWord(tr.fail), how, agent });
+    // the gateway stopped here with accounts left in the order: one it
+    // would not go on from (the same history refused on every account of
+    // a vendor, with no other vendor left)
+    return i >= r.order.length - 1
       ? t("{who} answered {status} and nobody is left to try, so {agent} gets the error.", { who: name, status: tr.status, agent })
       : t("{who} answered {status} — an error another account wouldn't fix, so {agent} gets it.", { who: name, status: tr.status, agent });
   }
@@ -1234,7 +1351,7 @@ function routingPage(part) {
     s.li.style.setProperty("--depth", d);
     s.name.textContent = info.name || info.id;
     s.id.textContent = "group/" + info.id;
-    s.mode.textContent = t((MODES[info.routing || ""] || MODES[""])[0]);
+    s.mode.textContent = t(modeOf(info.routing || "")[0]);
     s.rules = info.rules ? t(info.rules === 1 ? "1 rule" : "{n} rules", { n: info.rules }) : "";
     return s;
   }
@@ -1502,7 +1619,7 @@ function routingPage(part) {
     const f = r.order.find((x) => !x.fallback) || r.order[0];
     const g = r.group;
     const routing = g ? g.routing || "" : f?.routing || "";
-    const m = MODES[routing] || MODES[""];
+    const m = modeOf(routing);
     const on = r.order.filter((x) => !x.fallback).length;
     const pool = !g && f ? poolOf(f.provider) : null;
     const lone = !g && on <= 1 && !pool;
@@ -1552,6 +1669,16 @@ function routingPage(part) {
     goRouting(e, g.dataset.go);
   });
 
+  // lightRow lights a row and its wire: on for the one answering or that
+  // answered the request shown, now and a flowing wire only while a
+  // request is with it (#2386)
+  function lightRow(li, wire, on, now) {
+    li.classList.toggle("on", on);
+    li.classList.toggle("now", on && now);
+    wire.classList.toggle("live", on && now);
+    wire.classList.toggle("lit", on && !now);
+  }
+
   // what a row says now: resting, answering, or what routing weighed it by
   function render() {
     if (!cur) return;
@@ -1566,13 +1693,18 @@ function routingPage(part) {
       // rests by key or account, and by key or account and model for a
       // rest of one model only: the account's other models' rows don't
       // rest with it (#1960)
-      const r = src().get(row.rid) || pinned || cur, answered = new Set(), rests = new Map(), gave = new Map();
+      const r = src().get(row.rid) || pinned || cur, answered = new Set(), rests = new Map(), gave = new Map(), went = new Map();
       const restAt = (id, m, rest) => { const rm = restModel(rest, m); rests.set(rm ? id + "\u0000" + rm : id, rest); };
       const modelOf = (tr) => tried(r, tr)?.model || tr.model || "";
       for (const w of r.order) if (w.rest) restAt(w.id, w.model, w.rest);
       for (const tr of r.tries) {
         if (tr.done && tryOk(tr)) answered.add(tryseat(r, tr));
-        else if (tr.done && !tr.rest && !tr.again) gave.set(tryseat(r, tr), tr); // the error the agent got
+        // the error the agent got: the last try's, once the request is
+        // done, not one the gateway went on from (#2281)
+        else if (tr.done && !tr.rest && !tr.again && !tr.earlier && r.done && tr === r.tries[r.tries.length - 1]) gave.set(tryseat(r, tr), tr);
+        // one the gateway went on from says what it answered, and that the
+        // request went on, not that the agent got it
+        else if (tr.done && !tr.rest && !tr.again && tr !== r.tries[r.tries.length - 1]) went.set(tryseat(r, tr), tr);
         if (tr.rest) restAt(tr.id, modelOf(tr), tr.rest);
       }
       // it answered: whatever rest it began in is over
@@ -1586,6 +1718,7 @@ function routingPage(part) {
       else if (trying.has(id)) s = r.id !== cur.id && agents.size <= 1 ? t("answering another request…") : t("answering…");
       else if (answered.has(id)) s = agents.size > 1 ? t("answered {agent}", { agent: agentName(r.agent) }) : t("answered this request");
       else if (gave.has(id)) s = t("{status} · {fail} · passed to {agent}", { status: gave.get(id).status, fail: failWord(gave.get(id).fail), agent: agentName(r.agent) });
+      else if (went.has(id)) s = t("{status} · {fail} · went on to the next", { status: went.get(id).status, fail: failWord(went.get(id).fail) });
       else if (w.noURL) s = noURLWord(w);
       else if (w.sunk) s = t("rate limited at {time} · at the back", { time: clock(w.sunk) });
       else if (w.known) {
@@ -1608,12 +1741,16 @@ function routingPage(part) {
       const bar = w.known;
       row.li.classList.toggle("nobar", !bar);
       row.bi.style.width = bar ? fill(w) : "0";
-      const on = !resting && (trying.has(id) || answered.has(id) || onWire.has(id));
-      row.li.classList.toggle("on", on);
+      // on: the row answers or answered the request shown; flying: a
+      // request is with it now. Only that moves (the dot's pulse, the
+      // wire's flow): an answer that is over stays lit, still, or a
+      // finished request reads as one still being called (#2386)
+      const flying = !resting && (trying.has(id) || onWire.has(id));
+      const on = flying || (!resting && answered.has(id));
+      lightRow(row.li, row.wire, on, flying);
       row.li.classList.toggle("low", !!(!w.routing && w.known && w.used >= 90));
       row.li.classList.toggle("rest", !!resting || gave.has(id));
       row.li.classList.toggle("left", !!w.unlisted);
-      row.wire.classList.toggle("live", on);
       if (on) row.wire.style.setProperty("--agent", hueOf(r.agent));
       row.wire.classList.toggle("rest", !!resting || !!w.unlisted);
     }
@@ -1622,7 +1759,7 @@ function routingPage(part) {
     // rest
     const together = (f, ms) => {
       const has = (m, c) => m.li.classList.contains(c);
-      const on = ms.find((m) => has(m, "on")), resting = ms.filter((m) => has(m, "rest")).length;
+      const on = ms.find((m) => has(m, "now")) || ms.find((m) => has(m, "on")), resting = ms.filter((m) => has(m, "rest")).length;
       const held = ms.filter((m) => !has(m, "rest") && has(m, "left")).length; // at a cap, or used up (#2129)
       const parts = [];
       if (on) parts.push(`${who(on.w)}: ${on.st.textContent}`);
@@ -1630,8 +1767,7 @@ function routingPage(part) {
       if (resting) parts.push(t("{n} resting", { n: resting }));
       if (held) parts.push(t("{n} held", { n: held }));
       setText(f.st, parts.join(" · "));
-      f.li.classList.toggle("on", !!on);
-      f.wire.classList.toggle("live", !!on);
+      lightRow(f.li, f.wire, !!on, ms.some((m) => has(m, "now")));
       if (on) f.wire.style.setProperty("--agent", on.wire.style.getPropertyValue("--agent"));
       return !!ms.length && resting + held === ms.length;
     };
@@ -1655,9 +1791,8 @@ function routingPage(part) {
       setText(s.n, "");
       setText(s.st, "");
       s.li.classList.remove("rest");
-      const lit = ms.find((row) => row.li.classList.contains("on"));
-      s.li.classList.toggle("on", !!lit);
-      s.wire.classList.toggle("live", !!lit);
+      const lit = ms.find((row) => row.li.classList.contains("now")) || ms.find((row) => row.li.classList.contains("on"));
+      lightRow(s.li, s.wire, !!lit, ms.some((row) => row.li.classList.contains("now")));
       if (lit) s.wire.style.setProperty("--agent", lit.wire.style.getPropertyValue("--agent"));
     }
     for (const [id, a] of agents) a.wire.classList.toggle("live", busy.has(id));
@@ -1668,12 +1803,13 @@ function routingPage(part) {
   // the log is drawn again only when what it says changes: it is asked to
   // on every trace update (#308)
   let logR = null, headKey = "", stepsKey = "";
+  let bodiesFor = 0, bodiesKey = ""; // the request opened to its bodies (renderBodies)
   function renderLog() {
     const r = logR = pinned || cur;
     log.hidden = !r;
     if (!r) return;
     const on = () => listed().filter((x) => x.id >= logR.id);
-    const head = JSON.stringify([document.documentElement.lang, !!rp, pinned?.id, r.id, r.time, r.done, !!pinned && on().length > 1]);
+    const head = JSON.stringify([document.documentElement.lang, !!rp, pinned?.id, r.id, r.time, r.done, !!pinned && on().length > 1, bodiesFor === r.id]);
     if (headKey !== head) {
       headKey = head;
       logHead.replaceChildren(
@@ -1684,7 +1820,11 @@ function routingPage(part) {
         const usage = el("button", "text", t("View usage"));
         usage.dataset.feature = "usage"; // it opens on the Usage page
         usage.onclick = () => window.openUsageRoute(logR);
-        logHead.append(usage);
+        const open = bodiesFor === r.id;
+        const wire = el("button", "text rt-bodies-b", t(open ? "Hide request and response" : "Request and response"));
+        wire.setAttribute("aria-expanded", String(open));
+        wire.onclick = () => { bodiesFor = bodiesFor === logR.id ? 0 : logR.id; renderLog(); };
+        logHead.append(wire, usage);
         const again = el("button", "text", t("Replay"));
         again.onclick = () => replay([logR], pinned);
         logHead.append(again);
@@ -1703,7 +1843,68 @@ function routingPage(part) {
     }
     renderSteps(r);
     holdStory();
+    renderBodies(r);
     renderCtx(r);
+  }
+  // A request's request and response (Fate on Discord: a request on this
+  // page, a Codex prediction say, couldn't be opened to what was sent and
+  // what came back). The gateway's recent calls keep the last 40 calls'
+  // bodies, cut at 256 KB and in memory only, read when asked as the
+  // Gateway page's are (#1521); once they have let the request go, the
+  // request archive's copy, when it was on. Nothing more is recorded for
+  // it: without the archive an older request says how to keep them.
+  const bodiesGot = new Map(); // route id → { busy } | its bodies | { gone } | { error }
+  async function loadBodies(id) {
+    const pending = { busy: true };
+    bodiesGot.set(id, pending);
+    let got;
+    try {
+      const res = await fetch("/api/gateway/call?route=" + encodeURIComponent(id), { cache: "no-store" });
+      if (res.status === 404) got = { gone: true };
+      else if (!res.ok) got = { error: (await res.json().catch(() => null))?.error || res.statusText || String(res.status) };
+      else got = await res.json();
+    } catch (e) {
+      got = { error: e.message };
+    }
+    if (bodiesGot.get(id) !== pending) return;
+    bodiesGot.set(id, got);
+    bodiesKey = "";
+    if (logR) renderBodies(logR);
+  }
+  function renderBodies(r) {
+    const open = !rp && r.done && bodiesFor === r.id;
+    bodies.hidden = !open;
+    if (!open) {
+      if (bodiesKey) { bodiesKey = ""; bodies.replaceChildren(); }
+      return;
+    }
+    if (!bodiesGot.has(r.id)) loadBodies(r.id);
+    const got = bodiesGot.get(r.id);
+    const key = JSON.stringify([document.documentElement.lang, r.id, r.archive || "", got.busy ? "busy" : got.gone ? "gone" : got.error ? "error" : "in"]);
+    if (key === bodiesKey) return;
+    bodiesKey = key;
+    if (got.busy) { bodies.replaceChildren(el("div", "none", t("Fetching…"))); return; }
+    if (got.error) {
+      const again = el("button", "text", t("Try again"));
+      again.onclick = () => { bodiesGot.delete(r.id); bodiesKey = ""; renderBodies(logR); };
+      bodies.replaceChildren(el("div", "call-archive-err", t(got.error)), again);
+      return;
+    }
+    if (got.gone) {
+      if (r.archive) {
+        const draw = () => { if (bodiesFor === r.id) bodies.replaceChildren(archivePanel(r.archive, "rt|" + r.id, draw)); };
+        draw();
+        return;
+      }
+      bodies.replaceChildren(el("p", "rt-bodies-gone", t("magpie keeps the request and response of only the last 40 requests, until it quits. To keep every request's, turn on Request archive at the top of Usage › Requests.")));
+      return;
+    }
+    const grid = el("div", "call-details");
+    grid.append(
+      callBodyPanel("Request Body", got.requestBody, got.requestTruncated, undefined, "rt|" + r.id + "|req"),
+      callBodyPanel("Response Body", got.responseBody, got.responseTruncated, "rt|" + r.id),
+    );
+    bodies.replaceChildren(grid);
   }
   // holdStory keeps the story of the live request, its head and its lines,
   // as tall as it has been since the reader began following live, at this
@@ -1824,6 +2025,9 @@ function routingPage(part) {
     for (const a of asides(r)) items.push([a, "aside"]);
     r.tries.forEach((tr, i) => {
       items.push([tryWhy(r, i), tr.done ? (tryOk(tr) ? "ok" : "bad") : "wait"]);
+      // where its time went, once it is done
+      const when = tr.done && timeSaid(tr);
+      if (when) items.push([when, "aside time", tr]);
       // each model Copilot's Auto picked for it, where from, and whether
       // Copilot refused it, on which API and with Auto's session token or
       // without (#256)
@@ -1873,6 +2077,7 @@ function routingPage(part) {
       li.append(...(/^(why|ok|bad|wait|aside)$/.test(c) ? logoed(s, r) : [s]));
       if (c === "aside kind") li.prepend(kindTag(r), " ");
       if (c === "swap") li.prepend(swapTag(tr), " ");
+      if (c === "aside time") li.replaceChildren(timeElement(tr));
       return li;
     }));
     keptIcons = null;
@@ -2396,6 +2601,7 @@ function routingPage(part) {
       while (kids.length > els.length) reqs.lastElementChild.remove();
       if (reqs.scrollTop !== listTop) reqs.scrollTop = listTop;
     }
+    metaFit();
     renderActs(rs);
   }
   function reqRow(r, said, how, tr, ag, meta, metrics, title) {
@@ -2542,7 +2748,7 @@ function routingPage(part) {
         // how it routes, only where it routes over several, and a way to
         // where that is set
         if (poolOf(prov)) {
-          const m = MODES[list.find((x) => x.w.provider === prov && !x.w.fallback)?.w.routing || ""] || MODES[""];
+          const m = modeOf(list.find((x) => x.w.provider === prov && !x.w.fallback)?.w.routing || "");
           const s = el("span", "", t(w.kind === "key" && !w.routing ? "Smart" : m[0]));
           goTo(s, "pool:" + prov, w.name || w.provider);
           h.append(s);
@@ -3287,7 +3493,32 @@ function routingPage(part) {
   const gNames = el("div", "rt-gnames");
   // the groups go with the routing groups built-in plugin; the pools stay
   for (const n of [gHead, gFound, gNames, gList]) n.dataset.feature = "groups";
-  gsec.append(gHead, gFound, gNames, gList, pHead, pList);
+  // and off (the Essentials preset leaves it off), where they were
+  // the page says so and turns it on (bigbenniu on X: past the requests
+  // there was nothing, and no word of where New group had gone). The
+  // groups magpie finds route all the same.
+  const gOff = el("div", "rt-goff");
+  gOff.dataset.featureOff = "groups";
+  const gOn = el("button", "text rt-goffon", t("Turn on routing groups"));
+  gOn.type = "button";
+  gOn.onclick = async () => {
+    gOn.disabled = true;
+    try {
+      const next = await api("plugins/builtin", { id: "groups", on: true });
+      if (state.settings) state.settings.builtins = next;
+      applyFeatures(next);
+      status(t("Routing groups are on"), "ok", 1500);
+      loadGroups();
+    } catch (err) {
+      status(t(err.message), "err");
+    } finally {
+      gOn.disabled = false;
+    }
+  };
+  const gOffBox = el("div", "list rt-goffbox");
+  gOffBox.append(el("div", "rt-goffwhy", t("Routing groups are off in Plugins › Built-in: the groups magpie finds, one model several providers serve, still route, but your own can't be made or changed here.")), gOn);
+  gOff.append(el("div", "row-head", el("span", "label", t("Routing groups"))), gOffBox);
+  gsec.append(gHead, gFound, gNames, gList, gOff, pHead, pList);
   // after the requests: a request picked in the list plays on the stage,
   // so the list sits right under it
   more.append(gsec);
@@ -3392,6 +3623,7 @@ function routingPage(part) {
     try { next = groupsFrom(await api("groups")); } catch { return; }
     if (quiet === true && groups && JSON.stringify(next) === JSON.stringify(groups)) return;
     groups = next;
+    if (pBox) renderPanel();
     if (headOf) header(...headOf);
     if (!gEdit && !gsec.contains(document.activeElement)) renderGroups(); // not under someone's hands
   }
@@ -3926,7 +4158,7 @@ function routingPage(part) {
       line.title = t("{by} couldn't say which intent or effort a turn is the last time it was asked: {error}. Until it answers, no rule with an intent matches and turns reason as the agent asked. Each request's details say what it was asked.", { by: g.classifier || t("the classifier"), error: cf.error });
       main.append(line);
     }
-    const m = GROUP_ROUTE_OPTS.find(([id]) => id === (g.routing || "")) || ROUTE_OPTS[0];
+    const m = withJS(GROUP_ROUTE_OPTS, g.routing).find(([id]) => id === (g.routing || "")) || ROUTE_OPTS[0];
     const tags = el("span", "tags");
     tags.append(el("span", "tag", t(m[1])));
     if (g.affinity) tags.append(el("span", "tag", t(AFF_OPTS.find(([id]) => id === g.affinity)?.[1] || "")));
@@ -3943,7 +4175,7 @@ function routingPage(part) {
     if (g.firstToken > 0 && !manual) tags.append(el("span", "tag", t("Next after {n} without a first token", { n: took(g.firstToken * 1000) })));
     if (g.rules?.length) {
       const r = el("span", "tag" + (manual ? " idle" : ""), t(g.rules.length === 1 ? "1 rule" : "{n} rules", { n: g.rules.length }));
-      r.title = (manual ? t("The rules wait while you pick the model by hand.") + "\n" : "") + g.rules.map((x, i) => `${i + 1}. ${ruleText(x)} → ${x.pause ? t("pause") + " " : ""}${memberLabel(g, x.use)}`).join("\n");
+      r.title = (manual ? t("The rules wait while you pick the model by hand.") + "\n" : "") + g.rules.map((x, i) => `${i + 1}. ${ruleText(x)} → ${x.pause ? t("pause") + " " : ""}${memberLabel(g, x.use)}${x.useEffort ? " · " + t("{level} reasoning", { level: x.useEffort }) : ""}`).join("\n");
       tags.append(r);
     }
     if (g.disabled) tags.append(el("span", "tag idle", t("switched off")));
@@ -4470,9 +4702,10 @@ function routingPage(part) {
     listW.append(listPick, listHint);
     ed.append(el("label", "", t("Model lists")), listW);
 
-    const rHint = el("div", "hint", t(GROUP_HINT[d.routing] || GROUP_HINT[""]));
+    const gHint = (v) => GROUP_HINT[v] ? t(GROUP_HINT[v]) : MODES[v] || !v ? t(GROUP_HINT[""]) : modeOf(v)[1];
+    const rHint = el("div", "hint", gHint(d.routing));
     const rw = el("div");
-    rw.append(routingSegs(GROUP_ROUTE_OPTS.map(([id, n]) => [id, t(n)]), d.routing, (v) => { d.routing = v; rHint.textContent = t(GROUP_HINT[v] || GROUP_HINT[""]); draw(); drawRules(); drawSink(); }), rHint);
+    rw.append(routingSegs(withJS(GROUP_ROUTE_OPTS, d.routing).map(([id, n, js]) => [id, t(n), , js]), d.routing, (v) => { d.routing = v; rHint.textContent = gHint(v); draw(); drawRules(); drawSink(); }), rHint);
     rw.append(el("div", "hint", t(GROUP_NEST)));
     ed.append(el("label", "", t("Routing")), rw);
     // one rate limited with quota left: its place, or the back
@@ -4590,7 +4823,7 @@ function routingPage(part) {
     // (the owner, 10-14: every rule showed all ten conditions, empty —
     // "用户要输入、填写这么多东西，太恐怖了"; CherryL1quor on X took Jev for
     // the effort alone while the intent sat among the others).
-    const RULE_PAUSE = "M6 4.5v7M10 4.5v7", RULE_SEND = "M3 8h9M8.5 4.5 12 8l-3.5 3.5";
+    const RULE_PAUSE = "M6 4.5v7M10 4.5v7", RULE_SEND = "M3 8h9M8.5 4.5 12 8l-3.5 3.5", RULE_EFFORT = "M3 11.5a5 5 0 0 1 10 0M8 11.5l2.5-3.5";
     // how a part works, said under an ⓘ beside it rather than in a
     // paragraph under it: on hover, and read out with focus
     const infoTip = (text) => {
@@ -4903,7 +5136,7 @@ function routingPage(part) {
           r.pause = v === "pause";
           // what a pause doesn't take is cleared, not kept out of sight
           if (r.pause) {
-            Object.assign(r, { tokens: 0, images: false, effort: "", intent: "", compact: false });
+            Object.assign(r, { tokens: 0, images: false, effort: "", intent: "", compact: false, useEffort: "" });
             for (const [k, , p] of COND_KINDS) if (!p) openedOf(r).delete(k);
           }
           drawRules();
@@ -4916,7 +5149,22 @@ function routingPage(part) {
           ], setAct, "pause");
           then.append(act);
         }
-        then.append(ub, hint);
+        then.append(ub);
+        // the reasoning the rule asks its model for (#2633): an intent
+        // picks the model and its effort as a pair. Unset, the model is
+        // asked as the agent asked, and nothing is drawn; it is set from
+        // the rule's ⋯ and shown beside the model once it is
+        const pickEffort = (anchor, ev) => pickFrom("reasoning", anchor, ev, [
+          { value: "", label: t("As the agent asks"), note: t("the rule sets none") },
+          ...EFFORTS.map((v) => ({ value: v, label: fixedWords(v), note: t("whatever the agent asks") })),
+        ], (v) => { r.useEffort = v; drawRules(); }, r.useEffort || "");
+        if (!r.pause && r.useEffort) {
+          const eb = el("button", "rt-cond on rt-useeffort", fixedWords(r.useEffort));
+          eb.title = t("The rule asks the model for {level} reasoning whatever the agent asks, at the model's nearest level; a model whose levels aren't known is asked as the agent asked", { level: r.useEffort });
+          eb.onclick = (ev) => pickEffort(eb, ev);
+          then.append(eb);
+        }
+        then.append(hint);
         // the rule's own acts, under ⋯ as on the groups' cards: its place
         // in the order, sending or pausing, and taking it out
         const more = el("button", "icon rt-rmore");
@@ -4933,6 +5181,7 @@ function routingPage(part) {
           openRowMenu(more, [
             { name: "Move up", icon: MOVE_UP, off: i === 0, run: () => move(i - 1) },
             { name: "Move down", icon: MOVE_DOWN, off: i === d.rules.length - 1, run: () => move(i + 1) },
+            ...(r.pause ? [] : [{ name: r.useEffort ? "Change its reasoning" : "Set its reasoning", icon: RULE_EFFORT, sep: true, run: (ev) => pickEffort(more, ev) }]),
             r.pause
               ? { name: "Send to the model instead", icon: RULE_SEND, sep: true, run: () => setAct("send") }
               : { name: "Pause the model instead", icon: RULE_PAUSE, sep: true, run: () => setAct("pause") },
@@ -4946,7 +5195,7 @@ function routingPage(part) {
       focusCond = null;
       focus?.();
     };
-    const newRule = () => ({ use: d.members[d.members.length - 1], pause: false, tokens: 0, images: false, effort: "", agents: [], intent: "", compact: false, folders: [], exceptFolders: [], time: null });
+    const newRule = () => ({ use: d.members[d.members.length - 1], pause: false, useEffort: "", tokens: 0, images: false, effort: "", agents: [], intent: "", compact: false, folders: [], exceptFolders: [], time: null });
     // a new rule asks for an intent first, its box focused and the
     // classifier shown (Jev picked when there is one); any other condition
     // is a + away, and the intent an × away
@@ -5160,9 +5409,9 @@ function routingPage(part) {
       };
       const lab = (s, c) => { const w = el("span", "lab"); w.append(el("small", "", s), c); return w; };
       // by weight is a key's share (#841), set beside each key in the provider's editor
-      const opts = p.kind === "account" ? ROUTE_OPTS : [...ROUTE_OPTS, ["weight", "By weight"]];
+      const opts = withJS(p.kind === "account" ? ROUTE_OPTS : [...ROUTE_OPTS, ["weight", "By weight"]], p.routing);
       ctl.append(
-        lab(t("Routing"), routingSegs(opts.map(([id, n]) => [id, t(n)]), p.routing || "", (v) => set("route", { id: p.provider, routing: v }, t("{name}: {routing}", { name: p.name, routing: t(opts.find(([id]) => id === v)[1]) })))),
+        lab(t("Routing"), routingSegs(opts.map(([id, n, js]) => [id, t(n), , js]), p.routing || "", (v) => set("route", { id: p.provider, routing: v }, t("{name}: {routing}", { name: p.name, routing: t(opts.find(([id]) => id === v)[1]) })))),
         lab(t("Stays"), segs(AFF_OPTS.map(([id, n]) => [id, t(n)]), p.affinity || "", (v) => set("affinity", { id: p.provider, affinity: v }, t("{name}: {routing}", { name: p.name, routing: t(AFF_OPTS.find(([id]) => id === v)[1]) })))));
       if (sinkable(p.routing || "")) {
         const k = lab(t("Rate limited"), segs(SINK_OPTS.map(([id, n]) => [id, t(n)]), p.sink ? "sink" : "", (v) => set("sink", { id: p.provider, sink: v === "sink" }, t("{name}: {routing}", { name: p.name, routing: t(SINK_OPTS.find(([id]) => id === v)[1]) }))));
@@ -5261,7 +5510,13 @@ function routingPage(part) {
     try { today = await api("usage?period=today"); } catch { return; }
     renderPanel();
   }
-  window.panelRoutingShown = () => { if (pShown() && performance.now() - todayAt > 5e3) loadToday(); pDraw(); };
+  window.panelRoutingShown = () => {
+    if (pShown() && performance.now() - todayAt > 5e3) loadToday();
+    // a group switched on the Routing page or by `magpie group pick`
+    // since: the tab shows the model it goes to now
+    if (pShown()) loadGroups(true);
+    pDraw();
+  };
 
   // ---- the stage: agents → magpie → providers ----
   // Three a side at most, each kept where it is while it stays: one that
@@ -5492,6 +5747,8 @@ function routingPage(part) {
     open.onclick = (e) => { api("window/main?view=routing", {}); e.currentTarget.blur(); };
     head.append(el("span", "rt-livedot"), sum, el("span", "grow"), open);
     const out = [head];
+    const picks = panelPicks();
+    if (picks) out.push(picks);
     const rs = [...routes.values()].sort((a, b) => b.id - a.id).slice(0, P_ROWS);
     if (!offMsg && loaded && rs.length) out.push(pStage);
     if (offMsg) out.push(el("p", "pr-none", t(offMsg)));
@@ -5510,6 +5767,47 @@ function routingPage(part) {
     pDraw();
     pWake();
     fit();
+  }
+  // a Manual group's model, switched here as its card's radios do (#2489,
+  // Jerell.OvO on Discord): CC Switch's one provider on at a time, from
+  // the tray. A row a group of two or more that is on, its picked
+  // member a button that opens the members as a menu.
+  function panelPicks() {
+    const gs = (groups?.groups || []).filter((g) => g.routing === "manual" && !g.hidden && !g.disabled && g.members.length > 1);
+    if (!gs.length) return null;
+    const box = el("div", "pr-picks");
+    for (const g of gs) {
+      const picked = g.picked || (g.members.includes(g.pick) ? g.pick : g.members[0]);
+      const row = el("div", "pr-pick");
+      row.dataset.id = g.id;
+      const b = el("button", "sess-pick set");
+      b.type = "button";
+      b.setAttribute("aria-haspopup", "menu");
+      b.setAttribute("aria-expanded", "false");
+      b.setAttribute("aria-label", t("Model every request goes to") + " · " + g.name);
+      b.title = t("Every request goes to {name}", { name: memberLabel(g, picked) });
+      b.append(el("span", "", memberName(picked)), svg(CHEV, 10, 1.6));
+      b.onclick = (e) => {
+        e.stopPropagation();
+        if (b.classList.contains("open")) return closeProtoMenu();
+        openProtoMenu(b, g.members.map((id) => {
+          const info = g.memberInfo?.find((x) => x.id === id);
+          const note = [memberNote(id), fastIn(g, id) && t("fast"), info && !info.ready && t("no provider serves it now")].filter(Boolean).join(" · ");
+          return { v: id, name: memberName(id), literalName: true, note, title: memberLabel(g, id) };
+        }), picked, async (id) => {
+          closeProtoMenu();
+          if (id === picked) return;
+          try {
+            groups = groupsFrom(await api("groups/pick", { id: g.id, pick: id }));
+            renderPanel();
+            load(); // the gateway's model list, the agents' pickers
+          } catch (err) { status(err.message, "err"); }
+        }, "Model every request goes to", "", "right");
+      };
+      row.append(el("span", "pr-gname", g.name), b);
+      box.append(row);
+    }
+    return box;
   }
   function panelRow(r) {
     const [, how, tr] = outcome(r);
