@@ -16,7 +16,7 @@ func promptRoutes(mux *http.ServeMux) {
 		}
 		writeJSON(w, v)
 	})
-	for _, action := range []string{"save", "check", "remove"} {
+	for _, action := range []string{"save", "check", "remove", "agents"} {
 		mux.HandleFunc("POST /api/library/prompts/"+action, func(w http.ResponseWriter, r *http.Request) {
 			var c library.PromptChange
 			if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
@@ -38,6 +38,8 @@ func promptRoutes(mux *http.ServeMux) {
 			}
 			if action == "save" {
 				res, err = library.SavePrompt(c)
+			} else if action == "agents" {
+				res, err = library.SetPromptAgents(c.ID, c.Agents)
 			} else {
 				res, err = library.RemovePrompt(c.ID)
 			}

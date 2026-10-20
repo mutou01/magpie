@@ -1216,6 +1216,7 @@ magpie.plugin("library", (ctx) => {
   // ---------- explicitly invoked prompt templates ----------
 
   let promptSearch = "";
+  const promptWriting = new Map(); // stable ID → latest target intent, one request at a time
   function promptError(message) {
     const duplicate = /^the library already has a prompt called (.+)$/.exec(message);
     if (duplicate) return t("A template named {name} already exists", { name: duplicate[1] });
@@ -1223,6 +1224,103 @@ magpie.plugin("library", (ctx) => {
     return t(message);
   }
   const promptLabel = (s) => t(({ enabled: "Enabled", available: "Not enabled", conflict: "Name conflict", edited: "Edited outside the library", unverified: "Awaiting verification", unsupported: "Unavailable" })[s.status] || "Awaiting verification");
+
+  function promptChips(p) {
+    const selected = p.agents || [];
+    const targets = (lib.prompts?.targets || []).filter(a => a.detected || selected.includes(a.id));
+    const state = a => p.states?.find(s => s.agent === a.id);
+    const can = a => !p.error && a.detected && ["available", "enabled"].includes(state(a)?.status);
+    const reason = a => {
+      const s = state(a);
+      return [p.error, s?.reason ? t(s.reason) : s ? promptLabel(s) : t("Awaiting verification"), s?.source, s?.status === "unverified" && t("Open the template editor to check availability again")].filter(Boolean).join(" · ");
+    };
+    const problems = Object.fromEntries(targets.filter(a => !can(a)).map(a => [a.id, reason(a)]));
+    const lit = (p.states || []).filter(s => s.status === "enabled").map(s => s.agent);
+    const change = (_, c) => setPromptAgents(p, c, targets.filter(can).map(a => a.id));
+    const box = agentChips(targets, lit, change, { problems, blocked: a => !can(a) && !selected.includes(a.id) ? reason(a) : "" });
+    // All affects only eligible targets. A retained but unverified selection
+    // remains individually removable, without becoming an eligible bulk target.
+    const eligible = targets.filter(can).map(a => a.id);
+    if (eligible.length >= 2) {
+      const full = eligible.every(id => lit.includes(id));
+      const all = button(t("All"), "lib-ag all" + (full ? " on" : ""), (_, c) => change(null, c));
+      all.dataset.all = "1";
+      all.setAttribute("aria-pressed", String(full));
+      all.title = t(full ? "Every agent that can take it has it — click to take it from all {n}" : "Give it to all {n} agents that can take it", { n: eligible.length });
+      box.prepend(all);
+    }
+    for (const a of targets) {
+      const c = [...box.children].find(c => c.dataset.agent === a.id);
+      c.setAttribute("aria-label", a.name);
+      if (!can(a) && selected.includes(a.id)) c.title += "\n" + t("{agent} has it — click to take it away", { agent: a.name });
+      if (a.verification === "pending") c.title += "\n" + t("Native behavior awaits verification on this installation");
+      if (a.shared) c.title += "\n" + t("Shares skill files with Codex CLI");
+      if (a.reload) c.title += "\n" + t(a.reload);
+    }
+    return box;
+  }
+
+  function paintPrompt(p, row = [...page.querySelectorAll(".lib-prompt-row")].find(r => r.dataset.promptId === p.id)) {
+    if (!row) return;
+    const before = row.querySelector(":scope > .lib-agents"), fresh = promptChips(p);
+    const focused = before?.contains(document.activeElement) ? document.activeElement.dataset : null;
+    if (!before) row.append(fresh);
+    else if (!morphChips(before, fresh)) {
+      before.replaceWith(fresh);
+      if (focused) {
+        const next = [...fresh.children].find(c => focused.all ? c.dataset.all : c.dataset.agent === focused.agent);
+        (next || fresh.querySelector("[data-agent]") || row).focus({ preventScroll: true });
+      }
+    }
+    const box = row.querySelector(":scope > .lib-agents");
+    const busy = promptWriting.has(p.id);
+    box.setAttribute("aria-busy", String(busy));
+    for (const c of box.children) c.setAttribute("aria-busy", String(busy));
+    const tags = row.querySelector(".lib-tags");
+    tags.replaceChildren();
+    if ((p.agents || []).some(id => lib.prompts?.targets?.some(a => a.id === id && a.verification === "pending"))) tags.append(tag(t("Awaiting verification")));
+    if (p.error || (p.states || []).some(s => (p.agents || []).includes(s.agent) && !["enabled", "available"].includes(s.status))) tags.append(tag(t("Needs attention"), "warn"));
+  }
+
+  async function setPromptAgents(p, c, eligible) {
+    const pending = promptWriting.get(p.id);
+    const w = pending || { want: [...(p.agents || [])] };
+    if (c.dataset.all) {
+      const full = pending ? eligible.every(id => w.want.includes(id)) : eligible.every(id => p.states?.some(s => s.agent === id && s.status === "enabled"));
+      w.want = full ? w.want.filter(id => !eligible.includes(id)) : [...new Set([...w.want, ...eligible])];
+    } else {
+      const id = c.dataset.agent;
+      w.want = w.want.includes(id) ? w.want.filter(a => a !== id) : [...w.want, id];
+    }
+    promptWriting.set(p.id, w);
+    paintPrompt(p);
+    if (pending) return;
+    let answer;
+    try {
+      let sent;
+      do {
+        sent = [...w.want];
+        answer = await api("library/prompts/agents", { id: p.id, agents: sent });
+        lib.prompts = answer.prompts; taken++;
+        const fresh = lib.prompts.items.find(x => x.id === p.id);
+        if (fresh) paintPrompt(fresh);
+      } while ([...sent].sort().join() !== [...w.want].sort().join());
+      const problems = answer.result?.problems || [];
+      if (problems.length) status(problems.map(x => x.error).join(" · "), "warn", 8000);
+      else {
+        const enabled = lib.prompts.items.find(x => x.id === p.id)?.states.filter(s => s.status === "enabled").map(s => s.agent) || [];
+        const reload = [...new Set((lib.prompts.targets || []).filter(a => enabled.includes(a.id) && a.reload).map(a => t(a.reload)))];
+        status([t("Saved"), ...reload].join(" · "), "ok");
+      }
+    } catch (e) {
+      status(e.message, "err", 8000);
+      try { lib.prompts = await api("library/prompts"); taken++; } catch { /* retain the last confirmed state */ }
+    } finally {
+      promptWriting.delete(p.id);
+      const fresh = lib.prompts?.items.find(x => x.id === p.id);
+      if (fresh) paintPrompt(fresh);
+    }
+  }
 
   function renderPrompts(body) {
     const card = el("div", "list lib-list lib-prompts");
@@ -1236,29 +1334,32 @@ magpie.plugin("library", (ctx) => {
     const search = input(promptSearch, t("Search templates"));
     search.className = "lib-prompt-search";
     search.setAttribute("aria-label", t("Search templates"));
+    const finder = el("div", "list lib-card lib-prompt-finder");
+    const line = el("div", "lib-find");
+    line.append(glyph(GLYPH.search, "lib-mini"), search);
+    finder.append(line);
     const list = el("div", "lib-prompt-items");
     const draw = () => {
       list.replaceChildren();
       const q = promptSearch.normalize("NFKC").toLowerCase();
       for (const p of (lib.prompts?.items || []).filter(p => (p.name + "\n" + p.text).normalize("NFKC").toLowerCase().includes(q))) {
         const row = el("div", "row lib-row click lib-prompt-row");
+        row.dataset.promptId = p.id;
         row.tabIndex = 0; row.setAttribute("role", "button");
         const who = el("div", "who");
         who.append(el("div", "name", "/" + p.name), el("div", "sub", p.error || p.text.split("\n").find(l => l.trim()) || t("Empty")));
         const tags = el("div", "lib-tags");
-        const enabled = (p.states || []).filter(s => s.status === "enabled").length;
-        tags.append(tag(t("{n} enabled", { n: enabled })));
-        if ((p.agents || []).some(id => lib.prompts?.targets?.some(a => a.id === id && a.verification === "pending"))) tags.append(tag(t("Awaiting verification")));
-        if (p.error || (p.states || []).some(s => (p.agents || []).includes(s.agent) && !["enabled", "available"].includes(s.status))) tags.append(tag(t("Needs attention"), "warn"));
-        row.append(glyph(GLYPH.doc), who, tags);
-        row.onclick = () => editPrompt(p);
-        row.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); editPrompt(p); } };
+        who.append(tags);
+        row.append(glyph(GLYPH.doc), who);
+        row.onclick = () => editPrompt(lib.prompts.items.find(x => x.id === p.id) || p);
+        row.onkeydown = e => { if (e.target === row && !e.isComposing && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); row.click(); } };
         list.append(row);
+        paintPrompt(p, row);
       }
       if (!list.childElementCount) list.append(el("div", "lib-none", t(promptSearch ? "No matching templates" : "No prompt templates yet")));
     };
     search.oninput = () => { promptSearch = search.value; draw(); };
-    card.append(search, list); body.append(card); draw();
+    card.append(finder, list); body.append(card); draw();
   }
 
   function editPrompt(p) {

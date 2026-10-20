@@ -38,7 +38,7 @@ first adapters are Claude Code, Pi and Codex Desktop, the harnesses installed
 on the implementation machine; other harnesses and WSL have no adapter yet.
 
 [`prompts.go`](../../internal/library/prompts.go) owns `Prompt`, `ReadPrompts`,
-`CheckPrompt`, `SavePrompt` and `RemovePrompt`. UTF-8 bodies live at
+`CheckPrompt`, `SavePrompt`, `SetPromptAgents` and `RemovePrompt`. UTF-8 bodies live at
 `library/prompts/<id>.md`. [`prompt_store.go`](../../internal/library/prompt_store.go)
 keeps metadata, selected target ids and this machine's deployment paths/hashes
 in the authoritative, versioned `library/prompts.json`. `library.json` retains a
@@ -130,10 +130,34 @@ An absent field in an old bundle preserves local templates; an explicitly
 empty array clears them. Setup snapshots keep selections by stable template
 id and restore those selections without replacing the template text.
 
-The GUI API has `GET /api/library/prompts` and `POST` actions `check`, `save`
-and `remove` below that path. Mutations answer `part: "prompts"`, preserving
-the other Library sections and their unsaved drafts. The existing editor,
-list styles, discard checks and translations are reused.
+The GUI API has `GET /api/library/prompts` and `POST` actions `check`, `save`,
+`agents` and `remove` below that path. `agents` accepts `{id, agents}`: a stable
+template id and an explicit array of target ids (an empty array turns all off;
+missing/null is rejected). `SetPromptAgents` loads the latest name and body
+under the Library lock and changes only target selections, never text or names.
+Unknown new target ids fail the request. New blocked targets are omitted with
+individual `Result.Problems`; existing selections survive failed checks unless
+explicitly removed. Deployments still use passive conflict checks, ownership
+hashes and backups, with independent failures per target. This endpoint never
+starts Pi. All mutations answer `part: "prompts"`, the current `PromptsView` and
+`Result`, preserving other Library sections and their unsaved drafts. No new
+persistence fields or harness adapters are involved.
+
+The template list reuses the skills' `.lib-find` search layout and `agentChips`
+icons, including hover/focus expansion. Search filters names and bodies on input
+using NFKC plus lowercase; Refresh and New template stay in the heading. The
+editor retains its detailed target controls. Icons light only for `enabled`
+deployment states, separately from installation-specific native verification.
+Clicks update targets in place, serialize and coalesce a template's pending
+intent, and show busy state until the backend answers. Failures restore the
+last confirmed view and try a fresh read; search, keyboard focus and scroll are
+kept. If a focused All control disappears after a check, focus moves to an
+agent control. Reload hints describe only successfully deployed targets.
+With at least two eligible targets, All turns those targets on or off,
+leaving blocked selections alone. A selected blocked target can still be removed
+individually. Clicking an unselected blocked target explains why in the list;
+expired Pi checks direct the user to the editor's Check availability, without
+opening it or running extensions automatically.
 
 ## Runtime path
 

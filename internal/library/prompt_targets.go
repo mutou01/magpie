@@ -63,7 +63,7 @@ func promptTargets() []PromptTarget {
 	for _, id := range []string{"claude", "pi", "codex-desktop"} {
 		t := PromptTarget{ID: id, family: id, Verification: "pending", Reload: "Restart the harness to load updated commands"}
 		if id == "codex-desktop" {
-			t.Name, t.Icon, t.dir, t.Shared, t.Detected = "Codex Desktop", "codex", codexDir(), true, promptDesktopInstalled()
+			t.Name, t.Icon, t.dir, t.Shared, t.Detected = "Codex Desktop", "codex-color", codexDir(), true, promptDesktopInstalled()
 			t.Reload = "Skills refresh automatically; restart Codex Desktop if the command is missing"
 		} else if a := byID[id]; a != nil {
 			t.Name, t.Icon, t.dir, t.Detected = a.Name, a.Icon, a.Dir, a.Detected() && !a.CLIMissing()

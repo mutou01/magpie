@@ -4,11 +4,157 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/yetone/magpie/internal/edit"
 )
+
+func TestPromptTemplateTargetIcons(t *testing.T) {
+	sandbox(t)
+	v, err := ReadPrompts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range v.Targets {
+		if target.ID == "codex-desktop" && target.Icon != "codex-color" {
+			t.Fatalf("Desktop must use the existing Codex icon, got %q", target.Icon)
+		}
+	}
+}
+
+func TestPromptTemplateAgentUpdateProtectsLatestTemplateAndTargets(t *testing.T) {
+	h := sandbox(t)
+	ok(t)(SavePrompt(PromptChange{Name: "audit-login", Text: "Original", Agents: []string{}}))
+	v, _ := ReadPrompts()
+	id := v.Items[0].ID
+	ok(t)(SavePrompt(PromptChange{ID: id, Name: "audit-updated", Text: "Latest body", Agents: []string{}}))
+	write(t, filepath.Join(h, ".claude/commands/audit-updated.md"), "User command")
+	res, err := SetPromptAgents(id, []string{"claude", "pi", "pi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, _ = ReadPrompts()
+	p := v.Items[0]
+	if p.Name != "audit-updated" || p.Text != "Latest body" || !slices.Equal(p.Agents, []string{"pi"}) {
+		t.Fatalf("target-only update lost latest content or accepted conflicting target: %+v", p)
+	}
+	if len(res.Problems) != 1 || res.Problems[0].Agent != "claude" {
+		t.Fatalf("partial conflict missing: %+v", res)
+	}
+	if read(t, filepath.Join(h, ".claude/commands/audit-updated.md")) != "User command" {
+		t.Fatal("user command overwritten")
+	}
+	if !strings.Contains(read(t, filepath.Join(h, ".pi/agent/prompts/audit-updated.md")), "Latest body") {
+		t.Fatal("compatible target was not deployed")
+	}
+	for _, bad := range [][]string{nil, {"unknown-harness"}} {
+		if _, err := SetPromptAgents(id, bad); err == nil {
+			t.Fatalf("invalid target list accepted: %v", bad)
+		}
+	}
+	if _, err := SetPromptAgents("missing", []string{}); err == nil {
+		t.Fatal("missing template accepted")
+	}
+	v, _ = ReadPrompts()
+	if !slices.Equal(v.Items[0].Agents, []string{"pi"}) {
+		t.Fatal("failed request changed selection")
+	}
+	path := filepath.Join(h, ".pi/agent/prompts/audit-updated.md")
+	write(t, path, "External edit")
+	if _, err := SetPromptAgents(id, []string{"pi"}); err != nil {
+		t.Fatal(err)
+	}
+	v, _ = ReadPrompts()
+	if !slices.Equal(v.Items[0].Agents, []string{"pi"}) {
+		t.Fatal("external edit implicitly deselected target")
+	}
+	res, err = SetPromptAgents(id, []string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Problems) == 0 || read(t, path) != "External edit" {
+		t.Fatal("explicit disable must report and retain the external edit")
+	}
+}
+
+func TestPromptTemplateAgentUpdateDoesNotStartPiAndRetainsExpiredSelection(t *testing.T) {
+	h, log := promptPiFixture(t)
+	ok(t)(SavePrompt(PromptChange{Name: "audit-login", Text: "Body", Agents: []string{}}))
+	v, _ := ReadPrompts()
+	id := v.Items[0].ID
+	res, err := SetPromptAgents(id, []string{"pi", "claude"})
+	if err != nil || len(res.Problems) != 1 || res.Problems[0].Agent != "pi" {
+		t.Fatalf("expired new target should be rejected independently: %+v %v", res, err)
+	}
+	if read(t, log) != "" || read(t, log+".version") != "" {
+		t.Fatal("target-only action started Pi")
+	}
+	if s := piPromptState(t, PromptChange{ID: id, Name: "audit-login"}); s.Status != "available" {
+		t.Fatal(s)
+	}
+	before := read(t, log)
+	ok(t)(SetPromptAgents(id, []string{"claude", "pi"}))
+	write(t, filepath.Join(h, ".pi/agent/extensions/new.ts"), "export default pi => {}")
+	res, err = SetPromptAgents(id, []string{"pi"})
+	if err != nil || len(res.Problems) == 0 {
+		t.Fatalf("expired retained target must report verification failure: %+v %v", res, err)
+	}
+	v, _ = ReadPrompts()
+	if !slices.Equal(v.Items[0].Agents, []string{"pi"}) || read(t, filepath.Join(h, ".pi/agent/prompts/audit-login.md")) != "Body\n\n$ARGUMENTS\n" {
+		t.Fatal("expired verification lost selection or owned deployment")
+	}
+	ok(t)(SetPromptAgents(id, []string{}))
+	if _, err := os.Stat(filepath.Join(h, ".pi/agent/prompts/audit-login.md")); !os.IsNotExist(err) {
+		t.Fatal("explicit removal did not retire expired deployment")
+	}
+	if read(t, log) != before {
+		t.Fatal("target update silently rechecked Pi")
+	}
+}
+
+func TestPromptTemplateAgentUpdateKeepsBodyAndPartialDeploymentFailure(t *testing.T) {
+	h := sandbox(t)
+	ok(t)(SavePrompt(PromptChange{Name: "audit-login", Text: "Body", Agents: []string{}}))
+	v, _ := ReadPrompts()
+	id := v.Items[0].ID
+	path := filepath.Join(h, ".claude/commands/audit-login.md")
+	var res *Result
+	err := edit.Filtered(func(p string, b []byte) []byte {
+		if strings.Contains(filepath.ToSlash(p), "/.claude/commands/") {
+			write(t, path, "Intervening user file")
+		}
+		return b
+	}, func() error {
+		var err error
+		res, err = SetPromptAgents(id, []string{"claude", "pi"})
+		return err
+	})
+	if err != nil || len(res.Problems) == 0 {
+		t.Fatalf("intervening file not reported: %+v %v", res, err)
+	}
+	v, _ = ReadPrompts()
+	if !slices.Equal(v.Items[0].Agents, []string{"claude", "pi"}) || read(t, path) != "Intervening user file" {
+		t.Fatal("partial deployment erased intent or user file")
+	}
+	for _, s := range v.Items[0].States {
+		if s.Agent == "pi" && s.Status != "enabled" || s.Agent == "claude" && s.Status == "enabled" {
+			t.Fatalf("selection was mistaken for successful deployment: %+v", s)
+		}
+	}
+	if err := os.Remove(promptPath(id)); err != nil {
+		t.Fatal(err)
+	}
+	res, err = SetPromptAgents(id, []string{"pi"})
+	if err != nil || len(res.Problems) == 0 {
+		t.Fatalf("missing text must remain unknown: %+v %v", res, err)
+	}
+	if _, err := os.Stat(promptPath(id)); !os.IsNotExist(err) {
+		t.Fatal("target update recreated missing text")
+	}
+	ok(t)(SetPromptAgents(id, []string{}))
+}
 
 func TestPromptTemplatesAppearInLibrary(t *testing.T) {
 	sandbox(t)

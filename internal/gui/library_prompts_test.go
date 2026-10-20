@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yetone/magpie/internal/library"
 )
 
 func TestPromptTemplateAPISavesAndReads(t *testing.T) {
@@ -59,6 +61,43 @@ func TestPromptTemplateAPISavesAndReads(t *testing.T) {
 		}
 		if len(v.Items) != 1 || v.Items[0].ID != id || v.Items[0].Text != "检查边界条件。" {
 			t.Fatalf("API lost template after legacy rewrite: %s: %s", url, data)
+		}
+	}
+}
+
+func TestPromptTemplateAPIAgentsKeepsLatestText(t *testing.T) {
+	h := t.TempDir()
+	t.Setenv("HOME", h)
+	t.Setenv("USERPROFILE", h)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
+	t.Setenv("PATH", "")
+	if _, err := library.SavePrompt(library.PromptChange{Name: "review", Text: "Latest text", Agents: []string{}}); err != nil {
+		t.Fatal(err)
+	}
+	v, err := library.ReadPrompts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := v.Items[0].ID
+	mux := http.NewServeMux()
+	libraryRoutes(mux, nil)
+	r := httptest.NewRecorder()
+	mux.ServeHTTP(r, httptest.NewRequest("POST", "/api/library/prompts/agents", strings.NewReader(`{"id":"`+id+`","agents":[],"name":"stale","text":"stale"}`)))
+	if r.Code != http.StatusOK {
+		t.Fatalf("target-only update: %d %s", r.Code, r.Body.String())
+	}
+	v, err = library.ReadPrompts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Items[0].Name != "review" || v.Items[0].Text != "Latest text" {
+		t.Fatalf("target update overwrote template: %+v", v.Items[0])
+	}
+	for _, bad := range []string{`{"id":"` + id + `"}`, `{"id":"` + id + `","agents":null}`, `{"id":"` + id + `","agents":["unknown"]}`, `{"id":"missing","agents":[]}`} {
+		r = httptest.NewRecorder()
+		mux.ServeHTTP(r, httptest.NewRequest("POST", "/api/library/prompts/agents", strings.NewReader(bad)))
+		if r.Code != http.StatusBadRequest {
+			t.Fatalf("invalid target request accepted: %s: %d %s", bad, r.Code, r.Body.String())
 		}
 	}
 }

@@ -285,6 +285,55 @@ func SavePrompt(c PromptChange) (*Result, error) {
 	})
 }
 
+// SetPromptAgents updates only a template's targets, using its latest name and
+// body under the library lock. It never starts Pi or rewrites the body. Existing
+// selections survive failed checks; only explicit deselection retires them.
+func SetPromptAgents(id string, agents []string) (*Result, error) {
+	if agents == nil {
+		return nil, fmt.Errorf("prompt targets must be a list")
+	}
+	var blocked []Problem
+	res, err := changePrompts(func(l *Library) error {
+		p := l.prompt(id)
+		if p == nil {
+			return fmt.Errorf("no prompt called %s", id)
+		}
+		targets := promptTargets()
+		for _, agent := range agents {
+			if _, ok := promptTargetByID(targets, agent); !ok && !slices.Contains(p.Agents, agent) {
+				return fmt.Errorf("unknown prompt target: %s", agent)
+			}
+		}
+		body, bodyErr := os.ReadFile(promptPath(id))
+		if bodyErr == nil {
+			bodyErr = checkPromptText(string(body))
+		}
+		next := []string{}
+		for _, agent := range slices.Compact(slices.Sorted(slices.Values(agents))) {
+			if slices.Contains(p.Agents, agent) {
+				next = append(next, agent)
+				continue
+			}
+			target, _ := promptTargetByID(targets, agent)
+			state := l.promptState(target, p, string(body))
+			if bodyErr != nil {
+				state.Status, state.Reason = "unverified", bodyErr.Error()
+			}
+			if !promptUsable(state) {
+				blocked = append(blocked, Problem{Agent: agent, What: "prompt:" + p.Name, Error: strings.TrimSpace(state.Reason + " " + state.Source)})
+				continue
+			}
+			next = append(next, agent)
+		}
+		p.Agents = next
+		return nil
+	})
+	if res != nil {
+		res.Problems = append(res.Problems, blocked...)
+	}
+	return res, err
+}
+
 // RemovePrompt removes a template from the library.
 func RemovePrompt(id string) (*Result, error) {
 	return changePrompts(func(l *Library) error {
