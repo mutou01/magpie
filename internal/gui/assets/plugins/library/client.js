@@ -515,6 +515,7 @@ magpie.plugin("library", (ctx) => {
       for (const b of held) b.disabled = false;
       if (pressed) doneSaving(pressed);
       if (ok) render();
+      promptDeleteButtons();
     }
   }
   // given, for a row's agent chips, is the agents that have it now: an
@@ -1217,6 +1218,12 @@ magpie.plugin("library", (ctx) => {
 
   let promptSearch = "";
   const promptWriting = new Map(); // stable ID → latest target intent, one request at a time
+  function promptDeleteButtons(root = document) {
+    for (const b of root.querySelectorAll(".lib-prompt-delete, .lib-prompt-remove")) {
+      b.disabled = changing || promptWriting.size > 0;
+      b.title = promptWriting.size ? t("Wait for template target updates to finish before deleting") : t("Remove");
+    }
+  }
   function promptError(message) {
     const duplicate = /^the library already has a prompt called (.+)$/.exec(message);
     if (duplicate) return t("A template named {name} already exists", { name: duplicate[1] });
@@ -1278,11 +1285,11 @@ magpie.plugin("library", (ctx) => {
     for (const c of box.children) c.setAttribute("aria-busy", String(busy));
     const tags = row.querySelector(".lib-tags");
     tags.replaceChildren();
-    if ((p.agents || []).some(id => lib.prompts?.targets?.some(a => a.id === id && a.verification === "pending"))) tags.append(tag(t("Awaiting verification")));
     if (p.error || (p.states || []).some(s => (p.agents || []).includes(s.agent) && !["enabled", "available"].includes(s.status))) tags.append(tag(t("Needs attention"), "warn"));
   }
 
   async function setPromptAgents(p, c, eligible) {
+    if (changing) return;
     const pending = promptWriting.get(p.id);
     const w = pending || { want: [...(p.agents || [])] };
     if (c.dataset.all) {
@@ -1293,6 +1300,7 @@ magpie.plugin("library", (ctx) => {
       w.want = w.want.includes(id) ? w.want.filter(a => a !== id) : [...w.want, id];
     }
     promptWriting.set(p.id, w);
+    promptDeleteButtons();
     paintPrompt(p);
     if (pending) return;
     let answer;
@@ -1317,6 +1325,7 @@ magpie.plugin("library", (ctx) => {
       try { lib.prompts = await api("library/prompts"); taken++; } catch { /* retain the last confirmed state */ }
     } finally {
       promptWriting.delete(p.id);
+      promptDeleteButtons();
       const fresh = lib.prompts?.items.find(x => x.id === p.id);
       if (fresh) paintPrompt(fresh);
     }
@@ -1327,7 +1336,8 @@ magpie.plugin("library", (ctx) => {
     const head = el("div", "lib-cardhead");
     const refresh = button(t("Refresh"), "action", async () => {
       refresh.disabled = true;
-      try { const v = await api("library/prompts"); lib.prompts = v; render(); } catch (e) { status(e.message, "err"); } finally { refresh.disabled = false; }
+      const at = taken;
+      try { const v = await api("library/prompts"); if (taken !== at) return; lib.prompts = v; render(); } catch (e) { status(e.message, "err"); } finally { refresh.disabled = false; }
     });
     head.append(glyph(GLYPH.doc), el("b", "", t("Prompt templates")), el("span", "grow"), refresh, button("+ " + t("New template"), "action lib-prompt-add", () => editPrompt()));
     card.append(head, el("p", "lib-aside", t("Type /name in a supported harness to use a template with your request.")));
@@ -1350,16 +1360,56 @@ magpie.plugin("library", (ctx) => {
         who.append(el("div", "name", "/" + p.name), el("div", "sub", p.error || p.text.split("\n").find(l => l.trim()) || t("Empty")));
         const tags = el("div", "lib-tags");
         who.append(tags);
-        row.append(glyph(GLYPH.doc), who);
+        const acts = removeAct(() => confirmRemovePrompt(p));
+        const remove = acts[0]?.querySelector("button");
+        if (remove) {
+          remove.classList.add("lib-prompt-delete");
+          remove.setAttribute("aria-label", t("Remove {name}?", { name: "/" + p.name }));
+        }
+        row.append(glyph(GLYPH.doc), who, ...acts);
         row.onclick = () => editPrompt(lib.prompts.items.find(x => x.id === p.id) || p);
         row.onkeydown = e => { if (e.target === row && !e.isComposing && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); row.click(); } };
         list.append(row);
         paintPrompt(p, row);
       }
       if (!list.childElementCount) list.append(el("div", "lib-none", t(promptSearch ? "No matching templates" : "No prompt templates yet")));
+      promptDeleteButtons(list);
     };
     search.oninput = () => { promptSearch = search.value; draw(); };
     card.append(finder, list); body.append(card); draw();
+  }
+
+  async function removePrompt(p) {
+    if (changing || promptWriting.size) return false;
+    const rows = [...page.querySelectorAll(".lib-prompt-row")].map(r => r.dataset.promptId);
+    const at = rows.indexOf(p.id), top = page.scrollTop;
+    const next = [...rows.slice(at + 1), ...rows.slice(0, at).reverse()];
+    const sheet = modal;
+    if (sheet) sheet.saving = true;
+    try {
+      if (!await change("prompts/remove", { id: p.id }, t("{name} removed", { name: "/" + p.name }))) return false;
+      await closeLibModal(true);
+      await closeModal();
+      const visible = [...page.querySelectorAll(".lib-prompt-row")];
+      (next.map(id => visible.find(r => r.dataset.promptId === id)).find(Boolean) || page.querySelector(".lib-prompt-search"))?.focus({ preventScroll: true });
+      page.scrollTop = top;
+      return true;
+    } finally { if (sheet) sheet.saving = false; }
+  }
+
+  function confirmRemovePrompt(p) {
+    if (changing || promptWriting.size) return;
+    const ed = el("div", "editor lib-editor lib-prompt-delete-confirm");
+    const head = el("div", "ehead");
+    head.append(glyph(GLYPH.trash), el("b", "", t("Remove {name}?", { name: "/" + p.name })));
+    ed.append(head, el("p", "lib-confirm", t("The template is removed from the Library, with a backup kept. Unchanged managed deployments are removed; externally edited files are kept and reported.")));
+    const bar = el("div", "bar");
+    const go = button(t("Remove"), "primary danger-fill lib-prompt-delete", () => removePrompt(p));
+    bar.append(el("span", "grow"), button(t("Cancel"), "", closeLibModal), go);
+    ed.append(bar);
+    modal = { save: () => go.click() };
+    openLib(ed);
+    promptDeleteButtons();
   }
 
   function editPrompt(p) {
@@ -1448,7 +1498,7 @@ magpie.plugin("library", (ctx) => {
       const remove = button(t("Remove"), "action danger lib-prompt-remove", () => {
         remove.textContent = t("Remove {name}?", { name: p.name });
         remove.classList.add("lib-prompt-confirm-remove");
-        remove.onclick = async e => { e.stopPropagation(); if (await change("prompts/remove", { id: p.id })) await closeLibModal(true); };
+        remove.onclick = async e => { e.stopPropagation(); await removePrompt(p); };
       });
       bar.append(remove);
     }
@@ -1458,6 +1508,7 @@ magpie.plugin("library", (ctx) => {
     ed.append(bar); drawTargets();
     modal = { save, kind: "prompt", editor: ed, dirty: () => JSON.stringify(d) !== original };
     openLib(ed); requestAnimationFrame(() => name.focus({ preventScroll: true }));
+    promptDeleteButtons();
   }
 
   function setRow(x) {
@@ -5484,7 +5535,7 @@ magpie.plugin("library", (ctx) => {
 
   function openLib(content) { openModal(content); $("#modal").classList.add("lib"); }
   async function closeLibModal(saved = false) {
-    if (saved !== true && modal?.kind === "prompt" && modal.saving) return false;
+    if (saved !== true && modal?.saving) return false;
     if (saved !== true && (modal?.dirty?.() ?? modalFormDirty()) && !(await confirmDiscard())) return false;
     modal = null;
     closeModal().then(() => { if (!modal) $("#modal").classList.remove("lib"); });

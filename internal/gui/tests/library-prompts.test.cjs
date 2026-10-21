@@ -111,6 +111,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const chip = id => page.locator(`.lib-prompt-row .lib-ag[data-agent="${id}"]`);
       assert.equal(await page.locator(".lib-prompt-row .lib-ag[data-agent]").count(), 3, "templates show native target icons");
       assert.equal(await chip("claude").getAttribute("aria-pressed"), "true");
+      assert.equal((await page.locator(".lib-prompt-row .lib-tags").textContent()).trim(), "", "native acceptance pending is not a permanent list badge");
+      assert((await chip("claude").getAttribute("title")).includes({ en: "Native behavior", zh: "原生行为", "zh-TW": "原生行為", ja: "動作は未検証", de: "Natives Verhalten" }[lang]), "native acceptance remains explained on the icon");
+      assert((await chip("pi").getAttribute("class")).includes("warn"), "unavailable targets retain their warning dot");
       assert.equal(await chip("pi").getAttribute("aria-pressed"), "false");
       assert.equal(await page.locator('.lib-prompt-row .lib-ag[data-all]').count(), 0, "All needs two eligible targets");
       const beforeBlocked = sent.length;
@@ -148,6 +151,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const all = page.locator('.lib-prompt-row .lib-ag[data-all]');
       await all.waitFor();
       assert.equal(await all.getAttribute("aria-pressed"), "false");
+      assert.equal(await page.locator(".lib-prompt-row .lib-tags .warn").count(), 1, "selected abnormal targets retain Needs attention");
       const finishToggle = () => page.waitForFunction(() => !document.querySelector('.lib-prompt-row .lib-agents[aria-busy="true"]'));
       await all.focus();
       const scrollBefore = await page.locator("#view-library").evaluate(e => e.scrollTop);
@@ -164,6 +168,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           for (const width of [1100, 420]) {
             await page.setViewportSize({ width, height: 900 });
             await page.locator(".lib-prompts").scrollIntoViewIfNeeded();
+            await page.locator(".lib-prompt-row .lib-prompt-delete").focus();
+            await page.waitForFunction(() => getComputedStyle(document.activeElement.parentElement).opacity === "1");
             await page.screenshot({ path: path.join(process.env.ARTIFACT_DIR, `prompt-list-${engine}-${width}-${color}.png`), fullPage: true });
             assert(await page.locator("#view-library").evaluate(e => e.scrollWidth <= e.clientWidth + 1), "template list fits a narrow window");
           }
@@ -236,6 +242,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator(".lib-set.open .name").click();
       await page.locator(".lib-prompt-row .name").click();
       assert.equal(await page.locator('[data-prompt="name"]').inputValue(), "审查");
+      assert((await page.locator('.lib-prompt-target[data-agent="claude"]').textContent()).includes({ en: "Native behavior", zh: "原生行为", "zh-TW": "原生行為", ja: "動作は未検証", de: "Natives Verhalten" }[lang]), "editor retains native acceptance information");
       assert.equal(await page.locator("#modal select").count(), 0);
       assert(await page.locator("#modal").evaluate(el => el.scrollWidth <= el.clientWidth + 1));
       // Enable Pi through the page, then expire its runtime answer. Sending an

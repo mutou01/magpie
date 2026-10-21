@@ -148,6 +148,9 @@ icons, including hover/focus expansion. Search filters names and bodies on input
 using NFKC plus lowercase; Refresh and New template stay in the heading. The
 editor retains its detailed target controls. Icons light only for `enabled`
 deployment states, separately from installation-specific native verification.
+The list has no permanent native-verification badge: that explanation remains
+in the icon titles and editor. Abnormal icons keep their warning dots and
+reasons; selected abnormal targets still produce Needs attention.
 Clicks update targets in place, serialize and coalesce a template's pending
 intent, and show busy state until the backend answers. Failures restore the
 last confirmed view and try a fresh read; search, keyboard focus and scroll are
@@ -158,6 +161,22 @@ leaving blocked selections alone. A selected blocked target can still be removed
 individually. Clicking an unselected blocked target explains why in the list;
 expired Pi checks direct the user to the editor's Check availability, without
 opening it or running extensions automatically.
+
+Each template row reuses the skills' hover/focus delete button, between the
+body and agent chips, without opening the editor. Its in-app confirmation
+names the template and explains backups and managed-file cleanup. `remove`
+accepts only `{id}`; unchanged owned deployments are cleaned up, externally
+edited files survive and are reported. Cancel sends nothing, a pending submit
+cannot repeat or dismiss the dialog, and failures leave it open for retry.
+Success retains search, shared-instruction drafts and bounded scroll position;
+focus returns to the next visible template, the previous one, or search.
+The editor keeps its two-click removal but shares the same submit guard.
+Any pending target update, including its failure-recovery read, disables all
+template deletion. A deletion in progress also prevents new target updates.
+This global exclusion matters because target responses contain the whole
+template view: a late response must not restore a deleted row in the cache.
+Manual prompt refreshes also compare the existing view generation after
+reading, discarding a response if a mutation answered meanwhile.
 
 ## Runtime path
 

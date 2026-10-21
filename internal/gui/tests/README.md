@@ -12,8 +12,23 @@ Japanese and German, with light/dark themes and narrow windows. `ARTIFACT_DIR`
 retains editor and wide/narrow list screenshots. API fixtures are isolated from
 user templates, agent configuration and live Pi processes.
 
+`library-prompt-remove.test.cjs` covers skill-style row deletion and its
+localized confirmation, cancel without a request, stable-id payloads,
+duplicate prevention, failure/retry and reporting protected deployments.
+It retains search, shared drafts, bounded scroll and next/previous/search
+keyboard focus. Deferred target writes, failure-recovery reads and removal
+responses exercise global deletion/target-update exclusion across templates,
+including the editor's deletion entry point and cache redraw after removal.
+An older manual-refresh response must not restore a template removed meanwhile.
+The list test also requires no permanent native-acceptance badge while icon
+explanations, warning dots and editor acceptance information remain intact.
+Both tests use the same five languages and Windows browser engines; no
+harness or extension is launched. Backend owned-file/external-edit protection
+continues to be verified by the existing `TestPromptTemplate` Go tests.
+
 ```sh
 node --test internal/gui/tests/library-prompts.test.cjs
+node --test internal/gui/tests/library-prompt-remove.test.cjs
 go test -tags nogui ./internal/library ./internal/gui -run '^TestPromptTemplate' -count=1 -timeout=10m
 ```
 
