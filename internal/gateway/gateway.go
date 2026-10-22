@@ -1147,7 +1147,10 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 		data = append(data, videomakerObjects(r)...)
 	}
 	if r.Header.Get(provider.DecidersHeader) != "" {
-		deciders := keyAllowed(r, provider.Deciders())
+		// the decision models its own pickers offer: of a provider with
+		// picks (OpenRouter's twenty-odd), the picked ones, so another
+		// magpie lists what its Gateway page shows (GokoShiki on Discord)
+		deciders := keyAllowed(r, provider.OfferedDeciders(nil))
 		for i := range deciders {
 			deciders[i].Name = cmp.Or(deciders[i].Name, deciders[i].Model)
 		}
@@ -1276,7 +1279,7 @@ func (s *Server) countTokens(w http.ResponseWriter, r *http.Request) {
 	w, body, unmask, err := redacted(w, body)
 	defer unmask()
 	if err != nil {
-		writeError(w, provider.Anthropic, http.StatusServiceUnavailable, err.Error())
+		writeError(w, provider.Anthropic, maskStatus(err), err.Error())
 		return
 	}
 	named := unprefixed(model)
@@ -1607,7 +1610,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	defer unmask()
 	if err != nil { // fails closed: never sent unmasked
 		log.Printf("gateway: %v", err)
-		writeError(w, from, http.StatusServiceUnavailable, err.Error())
+		writeError(w, from, maskStatus(err), err.Error())
 		return
 	}
 	// the reply's model the member that answered, when asked for (#822)

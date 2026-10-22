@@ -1715,6 +1715,8 @@ async function info(id, key, strict) {
       variants: m.variants ?? was?.variants ?? {},
       // magpie's own mark: a decision model, answering System One
       ...(typeof m.decides === "boolean" ? { decides: m.decides } : was?.decides !== undefined ? { decides: was.decides } : {}),
+      // and one that searches the web by itself, asked in plain words
+      ...(typeof m.searches === "boolean" ? { searches: m.searches } : was?.searches !== undefined ? { searches: was.searches } : {}),
     }
   }
   const server = auths().get(id)?.spec
@@ -1839,6 +1841,7 @@ function methods(auth) {
   return (auth.methods ?? []).map((m) => ({
     type: m.type,
     label: m.label,
+    ...(m.type === "api" && m.keyless === true && typeof m.authorize === "function" ? { keyless: true } : {}),
     ...(m.type === "api" && shown(m.placeholder, 200) ? { placeholder: shown(m.placeholder, 200) } : {}),
   }))
 }
@@ -1920,6 +1923,7 @@ async function providers({ proxies } = {}) {
       npm: p.npm ?? "",
       api: p.api ?? "",
       methods: methods(a.auth),
+      single: a.auth.single === true,
       icon: iconOf(a),
       usage: typeof a.auth.usage === "function",
       checkin: typeof a.auth.checkin === "function",
@@ -1974,6 +1978,9 @@ async function providers({ proxies } = {}) {
           // a decision model (System One's), hidden from agents and
           // offered as a routing group's classifier
           decides: m.decides === true,
+          // a model that searches the web by itself, asked in plain
+          // words, which magpie may search with for other models
+          searches: m.searches === true,
         })),
     })
   }
@@ -2039,6 +2046,7 @@ function save(provider, key, result, inputs, apiKey) {
 
 // signInKey is where a sign-in goes: the account named, else a new one.
 function signInKey(provider, account) {
+  if (authOf(provider).single === true) return accountsOf(readAuth(), provider)[0] ?? provider
   return account && account !== "new" && providerOf(account) === provider ? account : freshKey(provider)
 }
 

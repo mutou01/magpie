@@ -433,7 +433,8 @@ function renderAgents() {
     const fieldBtn = (f, cls) => {
       const b = el("button", "field " + cls);
       const opt = optionFor(f, f.value);
-      b.title = t("{label}: {value}", { label: t(f.label), value: f.value || t("agent default") }) + (opt?.note ? ` · ${opt.note}` : "");
+      b.title = claudePicks(a, f) && !f.value ? t("{label}: {value}", { label: t(f.label), value: t(AUTO_MODE_UNSET) }) + "\n" + t(CLAUDE_PICKS)
+        : t("{label}: {value}", { label: t(f.label), value: f.value || t("agent default") }) + (opt?.note ? ` · ${opt.note}` : "");
       if (f.value && opt?.direct) b.title += "\n" + directSaid(a, opt);
       const effort = f.key === "effort" || f.label === "effort" || f.label === "thinking" || TIER_EFFORTS.includes(f.label);
       if (opt?.icon || opt?.icons?.length) b.append(optionIcon(opt));
@@ -443,7 +444,7 @@ function renderAgents() {
       else if (!f.value && !f.menu && a.icon) b.append(icon(a.icon));
       else if (!wide(f) || !f.value) b.append(el("span", "k", t(f.label)));
       if ((f.label === "executor" || f.label === "planner") && !b.querySelector(".k")) b.append(el("span", "k", t(f.label)));
-      const shown = f.menu ? f.summary : effort ? effortName(opt || { value: f.value }) : (opt?.label || f.value || t(FOLLOWS_MODEL.includes(f.label) ? "same as model" : "default"));
+      const shown = f.menu ? f.summary : effort ? effortName(opt || { value: f.value }) : (opt?.label || f.value || t(claudePicks(a, f) ? AUTO_MODE_UNSET : FOLLOWS_MODEL.includes(f.label) ? "same as model" : "default"));
       if (f.menu) b.title = f.options.map((o) => `${o.label}: ${o.note}`).join("\n");
       b.append(el("span", "v" + (f.value || f.custom ? "" : " empty"), shown));
       if (f.value && opt?.fast) b.append(fastTag(opt.ultra));
@@ -3703,8 +3704,14 @@ const SUB_MODEL = "subagent model";
 // pick, not the model's
 const AUTO_MODE = "auto mode";
 const AUTO_MODE_UNSET = "Claude Code's own pick";
-const leadPicks = (a, f) => f.label === "subagents" && a.id.split("@wsl:")[0] === "codex";
+const leadPicks = (a, f) => f.label === "subagents" && ["codex", "claude"].includes(a.id.split("@wsl:")[0]);
 const LEAD_PICKS = "Codex's lead may name another model for a subagent; set the subagent model to hold every subagent to one";
+// Claude Code's subagents unset: magpie writes no CLAUDE_CODE_SUBAGENT_MODEL
+// and Claude Code picks, taking the Agent call's model, then the subagent's
+// own model:, then that variable, then the session's (2.1.306), so it is
+// its pick, not "same as model" (KorenKrita on Discord)
+const CLAUDE_PICKS = "Claude Code's lead, or a subagent's own definition, may name a model or tier for it; a model set here is for the subagents that name none";
+const claudePicks = (a, f) => leadPicks(a, f) && a.id === "claude";
 const extra = (f) => f.key === "tiers" || FOLLOWS_MODEL.includes(f.label) || f.label === "sign-in" || f.key === "ultracode" || f.label === SUB_EFFORT || f.label === SUB_MODEL || f.label === AUTO_MODE || f.label === MEMORIES;
 const EXTRA_GLYPH = {
   subagents: "M4.5 2.75v10.5M4.5 9.25c0-2.2 1.6-3.75 3.9-3.75h3.35M9.9 3.6l1.9 1.9-1.9 1.9",
@@ -3733,7 +3740,7 @@ function extraField(a, f) {
   b.append(svg(EXTRA_GLYPH[f.label] || EXTRA_GLYPH.tiers, 13, 1.5));
   const opt = optionFor(f, f.value);
   b.title = f.label === SUB_EFFORT ? subEffortTitle(a, f, opt) : f.menu ? menuTitle(f)
-    : t("{label}: {value}", { label: f.label === MEMORIES ? t("Codex memories model") : t(f.label), value: t(opt?.label || f.value || (f.label === MEMORIES ? MEMORIES_DEFAULT : f.label === SUB_MODEL ? "the model the lead asks for" : f.label === AUTO_MODE ? AUTO_MODE_UNSET : leadPicks(a, f) ? "the lead's pick, else same as model" : "same as model")) }) + (opt?.note && !FOLLOWS_MODEL.includes(f.label) ? "\n" + t(opt.note) : "") + (leadPicks(a, f) ? "\n" + t(LEAD_PICKS) : "");
+    : t("{label}: {value}", { label: f.label === MEMORIES ? t("Codex memories model") : t(f.label), value: t(opt?.label || f.value || (f.label === MEMORIES ? MEMORIES_DEFAULT : f.label === SUB_MODEL ? "the model the lead asks for" : f.label === AUTO_MODE ? AUTO_MODE_UNSET : leadPicks(a, f) ? "the lead's pick, else same as model" : "same as model")) }) + (opt?.note && !FOLLOWS_MODEL.includes(f.label) ? "\n" + t(opt.note) : "") + (leadPicks(a, f) ? "\n" + t(claudePicks(a, f) ? CLAUDE_PICKS : LEAD_PICKS) : "");
   b.setAttribute("aria-label", b.title);
   b.dataset.key = f.key;
   b.onclick = (ev) => openPicker(a, f, b, ev);
@@ -3996,7 +4003,7 @@ async function load(again) {
     if (mode !== "panel" && !(view === "providers" || providersPage(view))) prefetchProviders();
     // the panel brought up on its Allowances tab is the reader opening
     // them (#1588); the page loaded while the panel is still put away is not
-    if (mode === "panel") { renderPanelQuota(); panelTab === "usage" && !document.hidden && (again || document.hasFocus()) ? quotasOpened() : loadQuotas(); }
+    if (mode === "panel") { renderPanelQuota(true); panelTab === "usage" && !document.hidden && (again || document.hasFocus()) ? quotasOpened() : loadQuotas(); }
     // an open provider editor is someone typing: coming back to the window
     // must not rebuild it under them
     if ((view === "providers" || providersPage(view)) && !(editing || adding)) await loadProviders();
@@ -4600,7 +4607,8 @@ function openPicker(agent, field, anchor, ev, only) {
   if (FOLLOWS_MODEL.includes(field.label)) {
     const main = agent.fields.find((f) => f.key === "model");
     const mainName = main && (optionFor(main, main.value)?.label || main.value);
-    options.unshift(main && leadPicks(agent, field) ? { value: "", label: t("Lead's pick"), note: t("{model} unless the lead names another", { model: mainName }), icon: optionFor(main, main.value)?.icon, reset: true }
+    options.unshift(main && claudePicks(agent, field) ? { value: "", label: t(AUTO_MODE_UNSET), note: t("{model} unless the lead or the subagent names another", { model: mainName }), icon: agent.icon, reset: true }
+      : main && leadPicks(agent, field) ? { value: "", label: t("Lead's pick"), note: t("{model} unless the lead names another", { model: mainName }), icon: optionFor(main, main.value)?.icon, reset: true }
       : main ? { value: "", label: t("Same as model"), note: mainName, icon: optionFor(main, main.value)?.icon, reset: true }
       : { value: "", label: t("Not set"), note: t("a Claude model of the tier, else the chat's model"), icon: agent.icon, reset: true });
   } else if (!only && !field.menu && !field.onPick && !options.some((o) => o.value === "")) {
@@ -7634,6 +7642,7 @@ function providerDraftValue() {
 function providerDirty() {
   // Price boxes parse on change; a page closed while typing hasn't blurred one yet.
   const active = document.activeElement;
+  if (accountModelsDraft(providers?.providers?.find((p) => p.id === editing)) !== null) return true;
   return !!draft && draft === providerDraftRef && (providerDraftValue() !== providerDraftBase ||
     (active?.matches(".editor .mprice input") && active.value !== active.defaultValue));
 }
@@ -7707,7 +7716,7 @@ function confirmDiscard() {
 async function cancelEdit(keep) {
   if ((providerDirty() || ((importing || importingApps) && modalFormDirty())) && !(await confirmDiscard())) return false;
   if (keep !== true) dropSigningIn(editing);
-  editing = null; draft = null; importing = null; importingApps = null; renderProviders();
+  editing = null; draft = null; acctModels = null; importing = null; importingApps = null; renderProviders();
   return true;
 }
 window.addEventListener("beforeunload", (e) => {
@@ -9299,9 +9308,11 @@ function drawEditor(p, presetID) {
       const priceRate = priceRateOfDraft();
       if (priceRate === undefined) return priceRateError(ed);
       if (priceTypedError(ed)) return;
+      const picked = accountModelsDraft(p);
+      if (picked === false) return editorError(t("Pick at least one model for the account, or choose All models"), "warn");
       const body = { id: p.id, models: chosenIds(), noModels: noneChosen(), unlisted: draft.unlisted, fallback: draft.fallback, contexts: cx.map, outputs: ox.map, compacts: cpx.map, proxy, accountProxies: own.map, maxConcurrency, ...queue, priceRate, modelPrefs: modelPrefsOfDraft(), pinUpstream: !!draft.pinUpstream, ...(p.carriesCompaction ? { nativeCompaction: !!draft.nativeCompaction } : {}), ...routingOfDraft(p) };
       saving(saveBtn, t("Saving…"));
-      savePluginOptions(subOf(a.agent)).then(() => providerAction("save", body, t("{name} saved", { name: p.name })), (e) => { doneSaving(saveBtn); editorError(e.message || String(e)); }); };
+      saveAccountModelsDraft(picked).then(() => savePluginOptions(subOf(a.agent))).then(() => providerAction("save", body, t("{name} saved", { name: p.name })), (e) => { doneSaving(saveBtn); editorError(e.message || String(e)); }); };
     bar.append(cancel, saveBtn);
     ed.append(bar);
     return ed;
@@ -9970,8 +9981,11 @@ function drawEditor(p, presetID) {
       Object.assign(body, movedURLs(draft));
     }
     editorError("");
+    const picked = accountModelsDraft(p);
+    if (picked === false) return editorError(t("Pick at least one model for the account, or choose All models"), "warn");
     saving(saveBtn, t(isNew ? "Adding…" : "Saving…"));
-    providerAction("save", body, t(isNew ? "{name} added" : "{name} saved", { name: draft.name || draft.id }));
+    const okMsg = t(isNew ? "{name} added" : "{name} saved", { name: draft.name || draft.id });
+    saveAccountModelsDraft(picked).then(() => providerAction("save", body, okMsg), (e) => { doneSaving(saveBtn); editorError(e.message || String(e)); });
   };
   saveBtn.onclick = save;
   bar.append(cancel, saveBtn);
@@ -11990,7 +12004,7 @@ function pluginMethod(sub, site) {
 // magpie, signs in and carries the requests.
 function pluginSubs() {
   return (providers.plugins || []).map((x) => ({
-    agent: x.id, pid: x.pid, name: x.name, icon: x.icon, plugin: x, own: true,
+    agent: x.id, pid: x.pid, name: x.name, icon: x.icon, plugin: x, own: true, single: !!x.single,
     get plans() { return t("from the plugin {spec}", { spec: x.spec }); },
   }));
 }
@@ -12167,7 +12181,8 @@ async function startPluginSignIn(sub, method, inputs = {}, o = {}) {
       return renderProviders();
     }
     if (ms[method].type === "api") {
-      signing = { agent: sub.agent, ...keep, state: "key" };
+      signing = { agent: sub.agent, ...keep, state: ms[method].keyless === true ? "starting" : "key" };
+      if (ms[method].keyless === true) return pluginKey(sub, "");
       return renderProviders();
     }
     const body = { provider: sub.pid, method, inputs };
@@ -12211,7 +12226,7 @@ async function pluginKey(sub, key) {
     const st = await api("plugin-signin", { provider: sub.pid, method: flow.method, inputs: flow.inputs, key });
     if (signing?.agent === sub.agent) signedIn(st);
   } catch (e) {
-    if (signing?.agent === sub.agent) { signing = { ...flow, error: e.message }; renderProviders(); }
+    if (signing?.agent === sub.agent) { signing = { ...flow, state: flow.state === "starting" ? "failed" : flow.state, error: e.message }; renderProviders(); }
   }
 }
 
@@ -13081,7 +13096,7 @@ function renderAccounts(a, p) {
     const add = el("button", "acc add");
     const ic = el("span", "dot");
     ic.append(svg(PLUS, 10, 1.8));
-    add.append(ic, el("span", "n", t(sub.single ? "Sign in to another {name} account" : "Add another {name} account", { name: sub.name })));
+    add.append(ic, el("span", "n", t(sub.single && sub.plugin ? "Sign in again" : sub.single ? "Sign in to another {name} account" : "Add another {name} account", { name: sub.name })));
     add.onclick = () => startSignIn(a.agent);
     list.append(add);
     if (sub.importable) {
@@ -14089,9 +14104,25 @@ async function accountAction(path, body, okMsg, confirmed = false) {
 // provider's, as before. The pill on its row says which it serves; a click
 // opens the provider's models under it as chips, picked and saved apart
 // from the editor's Save. acctModels is the row being picked: { id, ref,
-// chosen }.
+// chosen }. Picks left unsaved there go with the editor's Save, which says
+// it saved them (#2862).
 let acctModels = null;
 function accountModelsOf(p, ref) { return p.accountModels?.[String(ref).toLowerCase()] || []; }
+// accountModelsDraft: what the open picker of p's has picked and not saved,
+// as provider/accountmodels takes it; null when nothing, false when it has
+// every model unpicked, which no Save keeps.
+function accountModelsDraft(p) {
+  const a = acctModels;
+  if (!p || a?.id !== p.id) return null;
+  const own = accountModelsOf(p, a.ref);
+  if (own.length === a.chosen.length && a.chosen.every((id) => own.includes(id))) return null;
+  return a.chosen.length ? { id: p.id, account: a.ref, allow: [...a.chosen] } : false;
+}
+async function saveAccountModelsDraft(body) {
+  if (!body) return;
+  await api("provider/accountmodels", body);
+  acctModels = null;
+}
 // It gives the pill, and the open picker the row ends with, or null.
 function accountModels(p, ref, isKey, name) {
   const own = accountModelsOf(p, ref);
@@ -15282,9 +15313,12 @@ function loadQuotas(asked, again) {
   const p = Promise.resolve(quotasLoading).catch(() => {})
     .then(() => {
       began = quotaRefreshVersion;
-      return Promise.all([api("usage/quotas" + (asked ? "?asked=1" : ""), undefined, (h) => { reading = h.get("X-Magpie-Reading") === "1"; }), api("usage/quotas/history?days=45").catch(() => null)]);
+      // the curves come on their own: the allowances now never wait for
+      // them (a remote magpie's history can take seconds; #3192)
+      loadQuotaHist();
+      return api("usage/quotas" + (asked ? "?asked=1" : ""), undefined, (h) => { reading = h.get("X-Magpie-Reading") === "1"; });
     })
-    .then(([q, h]) => {
+    .then((q) => {
       // an answer that isn't a list of cards is a read that failed: what
       // was read before stays, as it does when the read is refused
       if (q != null && !Array.isArray(q)) { quotas = quotas || []; reading = false; return; }
@@ -15292,18 +15326,31 @@ function loadQuotas(asked, again) {
       // Whole-page reads are serialized; no older one still needs these
       // markers. A card reply must not retire them while a GET is pending.
       for (const [key, version] of quotaRefreshVersions) if (version <= began) quotaRefreshVersions.delete(key);
-      same =!!again && !!quotas && JSON.stringify(q || []) === JSON.stringify(quotas) && (!h || JSON.stringify(h) === JSON.stringify(quotaHist));
-      quotas = q || []; quotasAt = Date.now(); if (h) quotaHist = h;
+      same = !!again && !!quotas && JSON.stringify(q || []) === JSON.stringify(quotas);
+      quotas = q || []; quotasAt = Date.now();
     }, () => { quotas = quotas || []; reading = false; })
     .finally(() => {
       if (quotasLoading === p) quotasLoading = null;
-      if (!same) renderQuotas();
+      if (!same) renderQuotas(true);
       if (view === "usage") loadUpstream();
       if (reading && !quotasLater && ++quotasTries <= 20) quotasLater = setTimeout(() => { quotasLater = 0; loadQuotas(false, true); }, 1500);
     });
   p.asked = !!asked;
   quotasLoading = p;
   return p;
+}
+
+// loadQuotaHist reads the allowances' history for the curves, and draws
+// them again only when it differs from what is drawn. Of two reads on
+// their way, the later asked is the one that stands.
+let quotaHistSeq = 0, quotaHistV = 0;
+function loadQuotaHist() {
+  const seq = ++quotaHistSeq;
+  return api("usage/quotas/history?days=45").then((h) => {
+    if (seq !== quotaHistSeq || !h || JSON.stringify(h) === JSON.stringify(quotaHist)) return;
+    quotaHist = h; quotaHistV++;
+    if (quotas) renderQuotas(true);
+  }, () => {});
 }
 
 // A whole-page reply can have left the backend before a card's refresh
@@ -15392,8 +15439,13 @@ function ownLine(sub) {
   return line;
 }
 
-function renderQuotas() {
-  renderPanelQuota();
+// lazy: drawn only if something the panel shows changed (a load's answer,
+// the window coming back), not each time it is asked (#3192)
+function renderQuotas(lazy) {
+  renderPanelQuota(lazy);
+  // the tray panel never shows the Usage page: its cards and curves are
+  // not drawn there unseen (#3192)
+  if (mode === "panel") return;
   const subscriptions = $("#subscriptionUsage");
   const restoreFlash = keepQuotaFlash(subscriptions);
   const restoreRefresh = keepQuotaRefresh(subscriptions);
@@ -15402,17 +15454,17 @@ function renderQuotas() {
   // left turns their meters, and is only there when some card has one (a
   // balance is only ever what is left)
   $("#quotaHead").hidden = !!quotas && !quotas.length;
-  const mode = $("#quotaMode");
-  mode.hidden = !quotas?.some((q) => !q.error && q.windows?.length);
-  if (!mode.hidden) {
-    mode.replaceChildren();
+  const pick = $("#quotaMode");
+  pick.hidden = !quotas?.some((q) => !q.error && q.windows?.length);
+  if (!pick.hidden) {
+    pick.replaceChildren();
     for (const [left, name] of [[false, "Used"], [true, "Left"]]) {
       const b = el("button", "opt" + (left === quotaLeft ? " on" : ""), t(name));
       b.title = t(left ? "Show how much of each window is left" : "Show how much of each window is used");
       b.onclick = () => { if (left !== quotaLeft) setQuotaLeft(left); };
-      mode.append(b);
+      pick.append(b);
     }
-    slide(mode, "quotaMode");
+    slide(pick, "quotaMode");
   }
   renderQuotaTrend();
   if (!quotas) {
@@ -15463,7 +15515,7 @@ function renderQuotas() {
     }
     // many accounts (Linx on X: twenty-odd on one plugin, 顶成擎天柱):
     // the same, each still a row of its own
-    const accts = !keys && several && mode !== "panel" && subs.length > ACCTS_FOLD;
+    const accts = !keys && several && subs.length > ACCTS_FOLD;
     const folded = keys ? keysFolded(subs) : accts ? acctsFolded(subs) : new Set();
     for (const sub of subs) {
       if (folded.has(sub)) continue;
@@ -16860,9 +16912,17 @@ function renderPanelUse() {
 // account; balances as figures. All in the Usage page's order, a balance
 // where it was put there, not after the plans (#1510, JokerQyou); balances
 // side by side share one grid.
-function renderPanelQuota() {
+//
+// lazy: kept as it is when nothing it draws from has changed, so the
+// window's focus and visibility coming back neither rebuild the cards nor
+// start the skeleton's shimmer again (#3192). The minute is in it, for
+// the deadlines it words by the clock.
+function renderPanelQuota(lazy) {
   const box = $("#panelQuota");
   if (mode !== "panel" || !box) return;
+  const drawn = JSON.stringify([quotas, quotaHistV, quotaLeft, quotaRange, [...panelOptsFolded], state?.settings, locale, panelTab, panelPeek, panelArranging, usageArranging, Math.floor(Date.now() / 60e3)]);
+  if (lazy && renderPanelQuota.drawn === drawn) return;
+  renderPanelQuota.drawn = drawn;
   const subs = byUsageOrder(keyCards(quotas || []).filter((q) => q.balance || q.error || q.windows?.length));
   const none = !!quotas && !subs.length;
   const usageTab = $('#ptabs [data-ptab="usage"]');
@@ -17637,8 +17697,10 @@ function checkinRow(q, first, subs) {
     }
   };
   row.append(auto);
-  // pressed now: shown while an account isn't in today and could be
-  const due = subs.filter((x) => x.checkins && !x.checkinOff && (x.checkinBy || "") === by && !(x.checkin?.day === today && x.checkin.outcome !== "failed"));
+  // pressed now: shown while an account isn't in today and could be; a
+  // Qoder campaign can open later in the day, so its inactive too (#2696)
+  const later = /^(plugin:)?qoder(-cn)?$/.test(by);
+  const due = subs.filter((x) => x.checkins && !x.checkinOff && (x.checkinBy || "") === by && !(x.checkin?.day === today && x.checkin.outcome !== "failed" && !(later && x.checkin.outcome === "inactive")));
   if (due.length) {
     const now = el("button", "text ci-now", t("Check in now"));
     now.type = "button";
@@ -17650,7 +17712,7 @@ function checkinRow(q, first, subs) {
       try {
         const rs = await api("usage/" + vendor.api, vendor.plugin ? { provider: vendor.plugin } : {});
         const bad = (rs || []).filter((x) => x.outcome === "failed").length;
-        status(bad ? t("Check-in failed for {n} account(s)", { n: bad }) : t("Checked in"), bad ? "err" : "ok");
+        status(bad ? t("Check-in failed for {n} account(s)", { n: bad }) : t("Check-in status refreshed"), bad ? "err" : "ok");
       } catch (err) {
         status(err.message, "err");
       }
@@ -20856,6 +20918,12 @@ function renderAgentPrefLinks() {
   const box = $("#agentPrefLinks");
   box.replaceChildren();
   homeAgentPrefRows();
+  // Long conversations sets the windows the gateway serves, which an agent
+  // on another computer reads too: with no Codex or Claude Code here to
+  // hold it (a gateway, magpie in Docker) it stays in Settings (Linka)
+  const loose = $("#fullContextRow");
+  if (!state.agents.some((a) => agentPrefsOf(a)?.includes(loose.id))) box.before(loose);
+  else if (loose.parentElement === box.parentElement) $("#agentPrefRows").append(loose);
   for (const r of agentPrefRowEls) {
     const agents = state.agents.filter((a) => agentPrefsOf(a)?.includes(r.id) && !a.id.includes("@wsl:"));
     if (!agents.length || (r.id === "codexMemoriesRow" && r.hidden)) continue;
@@ -21785,7 +21853,12 @@ function renderRedact(s, keep) {
   i.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") save(); else if (e.key === "Escape") { i.value = words; i.blur(); } };
   i.onblur = save;
   row(t("Masked words"), t("Your own words to keep from vendors, separated by commas"), i);
+  // plain words, matched as written unless the user asks for any case
+  row(t("Masked words in any case"), t("A word also matches in other capitals: Nightjar masks NIGHTJAR and nightjar too"),
+    onOff(s.redactWordsAnyCase, (redactWordsAnyCase) => savePrefs({ ...keep, redactWordsAnyCase }))).id = "redactWordsAnyCaseRow";
   renderRedactRules(s, row);
+  renderMaskActions(s);
+  renderMaskTry(s);
   // how it is found: the rules on every request that masks anything, and
   // the local model on top of them, for what no pattern can tell
   const masking = s.redact || s.redactPersonal;
@@ -21886,7 +21959,6 @@ const MASK_BY = { rule: "Rules", yours: "Your rules", word: "Your words", model:
 // what a request was, beside a chat (gateway's noteMasked)
 const MASK_WHAT = { search: "Web search", image: "Image", video: "Video", decide: "System One", embeddings: "Embeddings", audio: "Audio" };
 const SHIELD = "M8 1.8 13 3.6v4.1c0 3-2.1 5.4-5 6.5-2.9-1.1-5-3.5-5-6.5V3.6Z";
-const SPARK = "M7 2.2c.5 2.9 1.4 3.8 4.3 4.3-2.9.5-3.8 1.4-4.3 4.3-.5-2.9-1.4-3.8-4.3-4.3 2.9-.5 3.8-1.4 4.3-4.3Z M12.2 10.2c.2 1.1.6 1.5 1.7 1.7-1.1.2-1.5.6-1.7 1.7-.2-1.1-.6-1.5-1.7-1.7 1.1-.2 1.5-.6 1.7-1.7Z";
 const PLACEHOLDER = /\{\{[^{}\s]{1,64}\}\}/g;
 let maskS = null;            // the settings the card was drawn with
 let maskSum = null, maskSumDays = 0, maskAt = 0, maskBusy = null, maskBusyDays = 0;
@@ -22067,7 +22139,9 @@ function drawMaskObs() {
   const num = el("span", "mo-num", fmtN(sum.n));
   big.append(num, el("span", "mo-unit", t(sum.n === 1 ? "value masked" : "values masked")));
   count.append(big, el("div", "mo-meta", sum.requests
-    ? t(sum.distinct === 1 ? "1 different value" : "{n} different values", { n: fmtN(sum.distinct) }) + " · " + t(sum.requests === 1 ? "1 request" : "{n} requests", { n: fmtN(sum.requests) })
+    ? [t(sum.distinct === 1 ? "1 different value" : "{n} different values", { n: fmtN(sum.distinct) }), t(sum.requests === 1 ? "1 request" : "{n} requests", { n: fmtN(sum.requests) }),
+      sum.blocked ? t(sum.blocked === 1 ? "1 request held back" : "{n} requests held back", { n: fmtN(sum.blocked) }) : "",
+      sum.warned ? t(sum.warned === 1 ? "1 value sent as written" : "{n} values sent as written", { n: fmtN(sum.warned) }) : ""].filter(Boolean).join(" · ")
     : t("Nothing yet in these days")));
   const chart = el("div", "mo-days");
   hero.append(count, chart);
@@ -22186,15 +22260,9 @@ function maskLedger(title, kind, rows, move) {
   rows.forEach((r, i) => {
     const b = el("button", "mo-row" + (r.model ? " model" : ""));
     b.type = "button";
-    if (r.model) {
-      const sp = el("span", "mo-spark");
-      sp.append(svg(SPARK, 12, 1.3));
-      b.append(sp);
-    } else {
-      const d = el("span", "mo-dotc");
-      d.style.background = r.c || "var(--faint)";
-      b.append(d);
-    }
+    const d = el("span", "mo-dotc");
+    d.style.background = r.c || (r.model ? "var(--c6)" : "var(--faint)");
+    b.append(d);
     const m = el("span", "mo-meter"), f = el("i");
     f.style.width = (100 * r.n) / max + "%";
     if (r.c) f.style.background = r.c;
@@ -22303,32 +22371,59 @@ function maskFlow(sum, move) {
   const mid = el("div", "mo-mid");
   const rowH = 34;
   const H = Math.max(fromRows.length, toRows.length) * rowH - 4;
-  const s = sv("svg", { viewBox: `0 0 100 ${H}`, preserveAspectRatio: "none", "aria-hidden": "true" });
   const max = Math.max(...fromRows.map((r) => r.n), ...toRows.map((r) => r.n), 1);
   const ys = (rows) => {
     const off = (H - (rows.length * rowH - 4)) / 2;
     return rows.map((_, i) => off + i * rowH + 15);
   };
-  const c = H / 2;
-  const ribs = [];
-  const line = (d, n, out) => sv("path", { d, class: "mo-rib" + (out ? " out" : ""), "stroke-width": 1 + n / max, "stroke-opacity": (out ? .3 : .16) + (.5 * n) / max, "vector-effect": "non-scaling-stroke", pathLength: 1 });
-  ys(fromRows).forEach((y, i) => ribs.push(line(`M0,${y}C28,${y} 26,${c} 50,${c}`, fromRows[i].n)));
-  ys(toRows).forEach((y, i) => ribs.push(line(`M50,${c}C74,${c} 72,${y} 100,${y}`, toRows[i].n, true)));
-  s.append(...ribs);
+  const c = H / 2, hubR = 19;
   const hub = el("span", "mo-hub");
   hub.append(svg(SHIELD, 16, 1.6));
   hub.title = t("Masked here, on this computer");
+  // drawn in the middle's own pixels, again as it is resized: a viewBox
+  // stretched to fit would bend the strokes and their dashes
+  const s = sv("svg", { "aria-hidden": "true" });
+  let drawnW = 0, first = true;
+  const draw = () => {
+    const W = Math.round(mid.clientWidth);
+    if (!W || W === drawnW) return;
+    drawnW = W;
+    s.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    s.replaceChildren();
+    const m = W / 2, bend = Math.max(18, (m - hubR) * .55);
+    const ribs = [];
+    const rib = (d, n, out, i) => {
+      const w = 1.5 + 5 * n / max;
+      const path = sv("path", { d, class: "mo-rib" + (out ? " out" : ""), "stroke-width": w, "stroke-opacity": (out ? .34 : .14) + .36 * n / max });
+      s.append(path);
+      ribs.push(path);
+      // what goes along it: a value as it was on the way in, a placeholder
+      // after the shield; more of them on a busier ribbon
+      if (!stillMotion()) for (let k = 0, dots = 1 + Math.round(2 * n / max); k < dots; k++) {
+        const dot = sv("circle", { r: out ? 2.2 : 1.8, class: "mo-dot" + (out ? " out" : "") });
+        const dur = 2.4 + i * .17;
+        dot.append(sv("animateMotion", { path: d, dur: dur + "s", begin: (out ? 1.2 : 0) + k * dur / dots + "s", repeatCount: "indefinite", keyPoints: "0;1", keyTimes: "0;1", calcMode: "spline", keySplines: ".45 0 .55 1" }));
+        dot.append(sv("animate", { attributeName: "opacity", values: "0;1;1;0", keyTimes: "0;.12;.85;1", dur: dur + "s", begin: (out ? 1.2 : 0) + k * dur / dots + "s", repeatCount: "indefinite" }));
+        s.append(dot);
+      }
+    };
+    ys(fromRows).forEach((y, i) => rib(`M0,${y}C${bend},${y} ${m - hubR - bend},${c} ${m - hubR},${c}`, fromRows[i].n, false, i));
+    ys(toRows).forEach((y, i) => rib(`M${m + hubR},${c}C${m + hubR + bend},${c} ${W - bend},${y} ${W},${y}`, toRows[i].n, true, i));
+    if (move && first) ribs.forEach((r, i) => {
+      // drawn in once, by its own length, then left whole
+      const len = r.getTotalLength();
+      r.style.strokeDasharray = `${len} ${len}`;
+      const out = r.classList.contains("out");
+      r.animate([{ strokeDashoffset: len }, { strokeDashoffset: 0 }], { duration: 760, delay: 380 + (out ? 520 : 0) + i * 40, easing: "cubic-bezier(.65, 0, .35, 1)", fill: "backwards" })
+        .finished.then(() => { r.style.strokeDasharray = ""; }, () => { r.style.strokeDasharray = ""; });
+    });
+    first = false;
+  };
   mid.append(s, hub);
   flow.style.height = H + "px";
   flow.append(from, mid, to);
-  if (move) {
-    ribs.forEach((r, i) => {
-      r.style.strokeDasharray = "1";
-      const out = r.classList.contains("out");
-      r.animate([{ strokeDashoffset: 1 }, { strokeDashoffset: 0 }], { duration: 760, delay: 380 + (out ? 520 : 0) + i * 40, easing: "cubic-bezier(.65, 0, .35, 1)", fill: "backwards" });
-    });
-    hub.animate([{ transform: "scale(.4)", opacity: 0 }, { transform: "none", opacity: 1 }], { duration: 520, delay: 760, easing: "cubic-bezier(.34, 1.56, .64, 1)", fill: "backwards" });
-  }
+  new ResizeObserver(draw).observe(mid);
+  if (move) hub.animate([{ transform: "scale(.4)", opacity: 0 }, { transform: "none", opacity: 1 }], { duration: 520, delay: 760, easing: "cubic-bezier(.34, 1.56, .64, 1)", fill: "backwards" });
   return flow;
 }
 
@@ -22470,7 +22565,8 @@ function maskRecordRow(r, v) {
   if (p.icon && r.provider) route.append(icon(p.icon));
   route.append(el("span", "who", r.provider ? p.name : t("A vendor")));
   if (r.model) route.append(el("span", "model", "· " + r.model));
-  if (r.what && r.what !== "chat") route.append(el("span", "what", MASK_WHAT[r.what] ? t(MASK_WHAT[r.what]) : r.what));
+  if (r.blocked) route.append(el("span", "what held", t("Held back")));
+  else if (r.what && r.what !== "chat") route.append(el("span", "what", MASK_WHAT[r.what] ? t(MASK_WHAT[r.what]) : r.what));
   const kinds = el("span", "mr-kinds");
   const by = {};
   for (const x of r.values || []) by[x.k] = (by[x.k] || 0) + (x.n || 1);
@@ -22521,6 +22617,8 @@ function maskRecordBody(r) {
     }
     line.append(maskDot(x.k), el("span", "mr-k", maskKindName(x.k)), shape, el("span", "mr-by" + (x.b === "model" ? " model" : ""), maskByName(x.b)));
     if (x.n > 1) line.append(el("span", "mr-x", "×" + fmtN(x.n)));
+    if (x.a === "warn") line.append(el("span", "mr-act warn", t("Sent as written")));
+    else if (x.a === "block") line.append(el("span", "mr-act block", t("Held back")));
     vals.append(line);
   }
   body.append(vals);
@@ -22544,11 +22642,15 @@ function maskRecordBody(r) {
 // maskedBadge: what masking swapped in one request (gateway's Masked), for
 // Recent calls and the Routing page; it opens that request's record
 function maskedBadge(m) {
-  const b = el("button", "mask-badge");
+  // a request whose values only went as written, which the user set a kind
+  // to do, is told in amber with how many
+  const warned = !m.n && m.warned > 0;
+  const b = el("button", "mask-badge" + (warned ? " warn" : ""));
   b.type = "button";
-  b.append(svg(SHIELD, 11, 1.7), el("span", "", fmtN(m.n)));
+  b.append(svg(SHIELD, 11, 1.7), el("span", "", fmtN(warned ? m.warned : m.n)));
   const kinds = Object.entries(m.kinds || {}).sort((x, y) => y[1] - x[1]).map(([k, n]) => `${maskKindName(k)} ${n}`).join(", ");
-  b.title = t(m.n === 1 ? "1 value masked before it went to the vendor: {kinds}" : "{n} values masked before it went to the vendor: {kinds}", { n: fmtN(m.n), kinds });
+  b.title = warned ? t(m.warned === 1 ? "1 value went to the vendor as written, as you set" : "{n} values went to the vendor as written, as you set", { n: fmtN(m.warned) })
+    : t(m.n === 1 ? "1 value masked before it went to the vendor: {kinds}" : "{n} values masked before it went to the vendor: {kinds}", { n: fmtN(m.n), kinds });
   b.setAttribute("aria-label", b.title);
   b.onclick = (e) => { e.stopPropagation(); openMaskRecord(m.key); };
   b.onkeydown = (e) => e.stopPropagation(); // Enter on it isn't the row's
@@ -22692,6 +22794,179 @@ function renderRedactRules(s, row) {
     x.onclick = () => set(rules.filter((_, i) => i !== n));
     row(r.kind, r.prefix ? t("Starts with {p}", { p: r.prefix }) : t("Matches {re}", { re: r.regex }), ed, x);
   });
+}
+
+// ---------- what is done with a value found, and trying it (#1977) ----------
+// Each kind masking finds is masked unless the user chose otherwise: Warn
+// sends it as written and records it, Block holds the whole request back.
+// The secrets, the user's own rules' kinds and any kind already set are
+// shown; the rest wait behind "Show all kinds".
+const MASK_SECRET_KINDS = ["API_KEY", "PRIVATE_KEY", "TOKEN", "PASSWORD", "SECRET"];
+const MASK_PERSONAL_KINDS = ["EMAIL", "PHONE", "ID_CARD", "BANK_CARD", "PERSON", "ADDRESS", "ACCOUNT", "SSN", "PASSPORT", "IBAN", "BIRTHDAY", "MAC", "SERIAL", "USERNAME", "HOSTNAME", "IP", "BUCKET"];
+const MASK_ACT_SUB = {
+  mask: "Goes to the vendor as a placeholder, and comes back as it was",
+  warn: "Goes to the vendor as written, and is recorded below",
+  block: "The request is held back: nothing is sent, and the agent is told why",
+};
+let maskActAll = false;
+// a rule's kind as its placeholders have it (redact.RuleKind)
+function maskRuleKind(k) {
+  const x = String(k || "").trim().toUpperCase().replace(/[ .-]/g, "_").replace(/[^A-Z0-9_]/g, "").replace(/^_+|_+$/g, "");
+  return x || "CUSTOM";
+}
+function maskActKinds(s) {
+  const acts = s.redactActions || {}, first = [], rest = [];
+  const add = (k, front) => {
+    if (first.includes(k) || rest.includes(k)) return;
+    (front || acts[k] ? first : rest).push(k);
+  };
+  if (s.redact) {
+    for (const k of MASK_SECRET_KINDS) add(k, true);
+    for (const r of s.redactRules || []) add(maskRuleKind(r.kind), true);
+  }
+  if (s.redactWords?.length) add("TERM", true);
+  if (s.redactPersonal) for (const k of MASK_PERSONAL_KINDS) add(k, false);
+  // a choice kept for a kind not masked now stays in view, to be undone
+  for (const k of Object.keys(acts)) add(k, true);
+  return { first, rest };
+}
+function renderMaskActions(s) {
+  const box = $("#maskActList");
+  if (!box) return;
+  box.replaceChildren();
+  const acts = s.redactActions || {};
+  const set = (next) => writingPrefs(api("settings/redact-actions", { actions: next }))
+    .then((ns) => { prefs = ns; renderSettings(); status(t("Saved"), "ok", 1500); })
+    .catch((e) => { status(t(e.message), "err"); renderSettings(); });
+  const row = (name, sub, ...tools) => {
+    const r = el("div", "row pref");
+    const who = el("div", "who"), val = el("div", "val");
+    who.append(el("div", "name", name), el("div", "sub", sub));
+    val.append(...tools);
+    r.append(who, val);
+    box.append(r);
+    return r;
+  };
+  const { first, rest } = maskActKinds(s);
+  if (!first.length && !rest.length) {
+    row(t("Mask everything found"), t("Turn on Mask secrets or Mask personal data first"));
+  }
+  for (const k of maskActAll ? [...first, ...rest] : first) {
+    const now = acts[k] || "mask";
+    const r = row(maskKindName(k), t(MASK_ACT_SUB[now]),
+      segs([["mask", t("Mask")], ["warn", t("Warn")], ["block", t("Block")]], now, (v) => {
+        const next = { ...acts };
+        if (v === "mask") delete next[k]; else next[k] = v;
+        set(next);
+      }));
+    r.classList.add("mask-act");
+    r.dataset.kind = k;
+    r.querySelector(".name").prepend(maskDot(k));
+    if (now !== "mask") r.querySelector(".sub").classList.add(now === "block" ? "act-block" : "act-warn");
+  }
+  if (rest.length) {
+    const more = el("button", "text", maskActAll ? t("Show fewer") : t("Show all kinds ({n} more)", { n: rest.length }));
+    more.onclick = () => { maskActAll = !maskActAll; renderSettings(); };
+    row(t("Personal data"), t("Emails, phone numbers, names and the rest, masked unless set here"), more).classList.add("mask-act-more");
+  }
+  // the allow list: values sent as written whichever finder finds them
+  const allow = (s.redactAllow || []).join(", ");
+  const i = input(allow, t("ops@company.com, build-01"));
+  i.className = "words mask-allow";
+  i.setAttribute("aria-label", t("Never mask"));
+  const save = () => {
+    const v = i.value.split(/[,，\n]/).map((w) => w.trim()).filter(Boolean);
+    if (v.join(", ") === allow) return;
+    writingPrefs(api("settings/redact-allow", { allow: v }))
+      .then((ns) => { prefs = ns; renderSettings(); status(t("Saved"), "ok", 1500); })
+      .catch((e) => { status(t(e.message), "err"); renderSettings(); });
+  };
+  i.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") save(); else if (e.key === "Escape") { i.value = allow; i.blur(); } };
+  i.onblur = save;
+  row(t("Never mask"), t("Values that always go as written, each whole and in any case, separated by commas: a team address, a test key"), i);
+}
+
+// renderMaskTry: text typed here is masked as a request would be now, and
+// shown as the vendor would get it, with what was found and what would be
+// done. It is sent to this magpie only, kept nowhere, and nothing of it
+// is remembered (/api/masking/preview).
+let maskTry = { text: "", res: null, seq: 0, timer: 0 };
+function renderMaskTry(s) {
+  const box = $("#maskTryList");
+  if (!box) return;
+  box.replaceChildren();
+  const r = el("div", "row pref mask-try");
+  const who = el("div", "who");
+  // the section head names it; the row says only what it does
+  who.append(el("div", "sub", t("Paste text an agent might send: it is masked here as a request would be, and kept nowhere")));
+  const area = el("textarea", "mask-try-in");
+  area.value = maskTry.text;
+  area.rows = 3;
+  area.spellcheck = false;
+  area.placeholder = t("Deploy with key sk-proj-… and mail ops@company.com");
+  area.setAttribute("aria-label", t("Try it"));
+  const out = el("div", "mask-try-out");
+  out.setAttribute("aria-live", "polite");
+  area.onkeydown = (e) => e.stopPropagation();
+  area.oninput = () => {
+    maskTry.text = area.value;
+    clearTimeout(maskTry.timer);
+    maskTry.timer = setTimeout(() => maskTryRun(out), 250);
+  };
+  r.append(who, area, out);
+  box.append(r);
+  maskTryDraw(out);
+}
+function maskTryRun(out) {
+  const seq = ++maskTry.seq, text = maskTry.text;
+  if (!text.trim()) { maskTry.res = null; maskTryDraw(out); return; }
+  api("masking/preview", { text }).then((res) => {
+    if (seq !== maskTry.seq) return;
+    maskTry.res = res;
+    maskTryDraw(out);
+  }).catch((e) => { if (seq === maskTry.seq) status(t(e.message), "err"); });
+}
+function maskTryDraw(out) {
+  out.replaceChildren();
+  const res = maskTry.res;
+  if (!res || !maskTry.text.trim()) { out.hidden = true; return; }
+  out.hidden = false;
+  const hits = res.hits || [];
+  const info = new Map(hits.map((h) => [h.placeholder, h]));
+  const head = el("div", "mo-lh");
+  head.append(el("span", "label", t("What the vendor would get")));
+  out.append(head);
+  if (hits.some((h) => h.action === "block")) {
+    out.append(el("div", "mask-try-note block", t("This request would be held back: nothing is sent")));
+  }
+  const text = el("div", "mask-try-text");
+  let at = 0;
+  for (const m of res.text.matchAll(PLACEHOLDER)) {
+    text.append(document.createTextNode(res.text.slice(at, m.index)));
+    const h = info.get(m[0]);
+    const kind = h?.kind || m[0].slice(2, -2).replace(/_[^_]*$/, "");
+    const mark = el("mark", "mo-ph", m[0]);
+    mark.style.setProperty("--k", maskColor(kind));
+    mark.title = maskKindName(kind);
+    text.append(mark);
+    at = m.index + m[0].length;
+  }
+  text.append(document.createTextNode(res.text.slice(at)));
+  out.append(text);
+  if (!hits.length) out.append(el("div", "mask-try-note", t("Nothing here would be masked")));
+  // each value once, by its placeholder, with what is done with it
+  const seen = new Set(), list = el("div", "mask-try-hits");
+  for (const h of hits) {
+    if (seen.has(h.placeholder)) continue;
+    seen.add(h.placeholder);
+    const line = el("div", "mr-val");
+    const act = h.action === "block" ? t("Held back") : h.action === "warn" ? t("Sent as written") : t("Masked");
+    line.append(maskDot(h.kind), el("span", "mr-k", maskKindName(h.kind)), el("span", "mr-shape", maskShape(h.head, h.len)),
+      el("span", "mr-by" + (h.by === "model" ? " model" : ""), maskByName(h.by)), el("span", "mr-act " + (h.action || "mask"), act));
+    list.append(line);
+  }
+  if (seen.size) out.append(list);
+  if (res.off) out.append(el("div", "mask-try-note", t("Masking is off: this is what Mask secrets and Mask personal data would do")));
 }
 
 // editRedactRule: the rule at n, open to change in its place (nf1qaz2w on
@@ -23318,7 +23593,7 @@ function prefsKeep(s) {
     uiFont: s.uiFont || null, codeFont: s.codeFont || null,
     otel: s.otel || {},
     trayUsages: s.trayUsages || [],
-    redact: !!s.redact, redactPersonal: !!s.redactPersonal, redactKinds: s.redactKinds || {}, redactWords: s.redactWords || [], codexWarmup: s.codexWarmup || "",
+    redact: !!s.redact, redactPersonal: !!s.redactPersonal, redactKinds: s.redactKinds || {}, redactWords: s.redactWords || [], redactWordsAnyCase: !!s.redactWordsAnyCase, codexWarmup: s.codexWarmup || "",
     claudeWarmup: s.claudeWarmup || "", codexWarmAt: s.codexWarmAt || "", claudeWarmAt: s.claudeWarmAt || "",
     codexWarmAts: warmTimes(s.codexWarmAts, s.codexWarmAt), claudeWarmAts: warmTimes(s.claudeWarmAts, s.claudeWarmAt), workbuddyCheckin: !!s.workbuddyCheckin, traeCheckin: !!s.traeCheckin, minimaxCheckin: !!s.minimaxCheckin, qoderCheckin: !!s.qoderCheckin, noStats: !!s.noStats, noUsageStats: !!s.noUsageStats,
     memberModel: !!s.memberModel, noLoopGuard: !!s.noLoopGuard, claudeLeanPrompt: !!s.claudeLeanPrompt, refusalRetries: s.refusalRetries ?? null,
@@ -23632,10 +23907,12 @@ function hold(h) {
     // what was clicked moves it down rather than scrolling the view to follow
     // it. Turning automatic updates off grew the Version row above the
     // switch once the save answered, and the view slid 2px off its top (#2134).
-    // Only while what was clicked stays under the pointer, moved by less than
-    // half its height: a day picked on Routing brings its stage in above the
-    // bar (~138px), and the bar is held where it was clicked (#961)
-    if (h.top && want > 0 && Math.abs(d) < a[0].getBoundingClientRect().height / 2) want = 0;
+    // Only while what was clicked moved by less than its height, a line come
+    // in above it: a day picked on Routing brings its stage in above the bar
+    // (~138px), and the bar is held where it was clicked (#961). Half its
+    // height was too little once a settings row kept 12px above and below its
+    // words: the Version row's line grew it 12px past a 22px switch (10-22)
+    if (h.top && want > 0 && Math.abs(d) < a[0].getBoundingClientRect().height) want = 0;
     // a view at its top when clicked stays there rather than be given room
     // to scroll down: a chip saved in the panel's Profiles came in above the
     // button held, and room made for the button slid the chip up under the
