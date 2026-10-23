@@ -4,13 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"slices"
 
 	"github.com/yetone/magpie/internal/agent"
 )
 
 // PromptTarget describes native invocation, separately from the agent's
-// always-loaded instructions. Desktop and CLI can share physical files.
+// always-loaded instructions. Codex uses one target for CLI/Desktop shared files.
 type PromptTarget struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
@@ -19,6 +20,7 @@ type PromptTarget struct {
 	Reload       string `json:"reload"`
 	Shared       bool   `json:"shared,omitempty"`
 	Verification string `json:"verification"`
+	Invocation   string `json:"invocation"`
 	dir          string
 	family       string
 }
@@ -33,23 +35,12 @@ type PromptState struct {
 
 // These catalogs deliberately include conditional built-ins and aliases. They
 // reserve names rather than claiming to enumerate a running session. Sources:
-// code.claude.com/docs/en/interactive-mode; pi core/slash-commands.ts;
+// code.claude.com/docs/en/interactive-mode;
 // learn.chatgpt.com/docs/reference/slash-commands. Only locally installed
 // harness families are implemented in this first release.
 var promptBuiltins = map[string]string{
-	"claude":        "help clear compact config context cost doctor exit export feedback hooks init login logout mcp memory model permissions plan plugin plugins rename resume review rewind status tasks terminal theme usage vim add-dir agents skills deep-research dataviz update-config verify debug code-review simplify batch fewer-permission-prompts loop claude-api workflow-authoring run run-skill-generator auto-mode-setup autocompact color output-style effort fast heapdump __remote-workflow workflow-launch-exec reload-plugins reload-skills security-review insights recap goal list-agents team-onboarding checkup proactive reset new settings name stats peers",
-	"pi":            "help model models settings scoped-models export import share bug copy name session fork tree thinking clone trust login logout new compact resume reload hotkeys changelog quit skills llama",
-	"codex-desktop": "approve archive chat cloud cloud-environment compact fast feedback fork goal ide-context init local mcp memories model new pet pin plan project reasoning rename review side status usage worktree 计划",
-}
-
-// Reuse app installation evidence rather than a CLI or leftover config folder.
-var promptDesktopInstalled = func() bool {
-	for _, a := range agent.All() {
-		if a.ID == "codex" {
-			return a.HasApp()
-		}
-	}
-	return false
+	"claude": "help clear compact config context cost doctor exit export feedback hooks init login logout mcp memory model permissions plan plugin plugins rename resume review rewind status tasks terminal theme usage vim add-dir agents skills deep-research dataviz update-config verify debug code-review simplify batch fewer-permission-prompts loop claude-api workflow-authoring run run-skill-generator auto-mode-setup autocompact color output-style effort fast heapdump __remote-workflow workflow-launch-exec reload-plugins reload-skills security-review insights recap goal list-agents team-onboarding checkup proactive reset new settings name stats peers",
+	"codex":  "approve archive chat cloud cloud-environment compact fast feedback fork goal ide-context init local mcp memories model new pet pin plan project reasoning rename review side status usage worktree 计划",
 }
 
 func promptTargets() []PromptTarget {
@@ -60,18 +51,22 @@ func promptTargets() []PromptTarget {
 		}
 	}
 	var out []PromptTarget
-	for _, id := range []string{"claude", "pi", "codex-desktop"} {
-		t := PromptTarget{ID: id, family: id, Verification: "pending", Reload: "Restart the harness to load updated commands"}
-		if id == "codex-desktop" {
-			t.Name, t.Icon, t.dir, t.Shared, t.Detected = "Codex Desktop", "codex-color", codexDir(), true, promptDesktopInstalled()
-			t.Reload = "Skills refresh automatically; restart Codex Desktop if the command is missing"
-		} else if a := byID[id]; a != nil {
+	for _, id := range []string{"claude", "pi", "codex", "dsh"} {
+		t := PromptTarget{ID: id, family: id, Invocation: "/<name>", Verification: "pending", Reload: "Restart the harness to load updated commands"}
+		if a := byID[id]; a != nil {
 			t.Name, t.Icon, t.dir, t.Detected = a.Name, a.Icon, a.Dir, a.Detected() && !a.CLIMissing()
 			if id == "claude" {
 				t.dir = claudeDir()
 			}
 		}
 		switch id {
+		case "codex":
+			t.Name, t.Icon, t.dir, t.Shared = "Codex", "codex-color", codexDir(), true
+			// Detection follows the Agent page, including shared-app evidence.
+			// Native inventory verification separately requires the CLI entry.
+			t.Invocation = "/skills · $<name>"
+		case "dsh":
+			t.Invocation = "/<name>"
 		case "pi":
 			t.Reload = "Run /reload to load updated commands"
 		}
@@ -82,7 +77,7 @@ func promptTargets() []PromptTarget {
 
 func (t PromptTarget) folder() string {
 	switch t.ID {
-	case "codex-desktop":
+	case "codex-desktop", "codex", "dsh":
 		return filepath.Join(t.dir, "skills")
 	case "pi":
 		return filepath.Join(t.dir, "prompts")
@@ -99,10 +94,16 @@ func (t PromptTarget) files(p *Prompt, text string) (map[string][]byte, error) {
 	if !filepath.IsLocal(name + ".md") {
 		return nil, fmt.Errorf("This command name is not a valid file name")
 	}
-	if t.ID == "codex-desktop" {
+	if t.ID == "dsh" {
+		if !regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`).MatchString(name) {
+			return nil, fmt.Errorf("DeepSeek Harness names require lowercase ASCII letters, digits and single hyphens")
+		}
+		return map[string][]byte{filepath.Join(t.folder(), name, "SKILL.md"): []byte("---\nname: " + quoted(name) + "\ndescription: " + quoted("Explicitly invoke /"+name+" to apply these instructions to the accompanying request.") + "\ndisable-model-invocation: true\nuser-invocable: true\n---\n\n" + text + "\n")}, nil
+	}
+	if t.ID == "codex-desktop" || t.ID == "codex" {
 		dir := filepath.Join(t.folder(), name)
 		return map[string][]byte{
-			filepath.Join(dir, "SKILL.md"):              []byte("---\nname: " + quoted(name) + "\ndescription: " + quoted("Explicitly invoke /"+name+" to apply these instructions to the accompanying request.") + "\n---\n\n" + text + "\n"),
+			filepath.Join(dir, "SKILL.md"):              []byte("---\nname: " + quoted(name) + "\ndescription: " + quoted("Explicitly invoke this skill to apply these instructions to the accompanying request.") + "\n---\n\n" + text + "\n"),
 			filepath.Join(dir, "agents", "openai.yaml"): []byte("policy:\n  allow_implicit_invocation: false\n"),
 		}, nil
 	}
@@ -114,6 +115,9 @@ func (t PromptTarget) files(p *Prompt, text string) (map[string][]byte, error) {
 }
 
 func promptTargetByID(all []PromptTarget, id string) (PromptTarget, bool) {
+	if id == "codex-desktop" { // compatibility with older clients and ownership records
+		id = "codex"
+	}
 	i := slices.IndexFunc(all, func(t PromptTarget) bool { return t.ID == id })
 	if i < 0 {
 		return PromptTarget{}, false

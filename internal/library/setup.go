@@ -189,7 +189,7 @@ func Holds(s *Setup) bool {
 		}
 	}
 	for id, agents := range s.Prompts {
-		if p := l.prompt(id); p != nil && !same(p.Agents, agents) {
+		if p := l.prompt(id); p != nil && !same(promptAgents(p.Agents), promptAgents(agents)) {
 			return false
 		}
 	}

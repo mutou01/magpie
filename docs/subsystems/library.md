@@ -34,8 +34,13 @@ agents RTK, a CLI that cuts shell output down before the model reads it.
 
 The Instructions tab also manages explicitly invoked, global prompt templates.
 They do not enter the shared instructions or change with its active set. The
-first adapters are Claude Code, Pi and Codex Desktop, the harnesses installed
-on the implementation machine; other harnesses and WSL have no adapter yet.
+adapters are limited to locally detected Claude Code, Pi, Codex and DeepSeek
+Harness. Codex has one CLI adapter, not a separate Desktop adapter. Other
+harnesses, WSL and plugin agents are not prompt targets. Compatibility must be established by native protocol, effective
+configuration and observed behavior, never by a software-version allow-list.
+Versions and resource hashes are diagnostic/invalidation inputs only. An adapter
+must never modify the Harness program, source or protocol: it reads and executes
+the original installation and writes templates only to native resource folders.
 
 [`prompts.go`](../../internal/library/prompts.go) owns `Prompt`, `ReadPrompts`,
 `CheckPrompt`, `SavePrompt`, `SetPromptAgents` and `RemovePrompt`. UTF-8 bodies live at
@@ -63,62 +68,111 @@ letters (including Chinese), numbers, `-` and `_`, at most 60 characters.
 NFKC and case-insensitive comparison prevents equivalent library names.
 
 [`prompt_targets.go`](../../internal/library/prompt_targets.go) writes Claude
-commands and Pi prompts as Markdown with `$ARGUMENTS`. Codex Desktop gets a
-skill in its resolved Codex home, with `policy.allow_implicit_invocation: false`
-in `agents/openai.yaml`; Desktop installation is checked with `Agent.HasApp`,
-independently of the CLI. Its skill files may also be read by Codex CLI; the
-page states that shared scope. Native argument processing and reload rules
-remain the harness's. Installation-specific runtime verification is shown
-separately from whether files have been deployed.
+commands and Pi prompts as Markdown with `$ARGUMENTS`, invoked as `/name`.
+Codex uses one `codex` target, named Codex, matching the Agent and Skills modules.
+It writes an explicit-only skill in the resolved Codex home, with
+`policy.allow_implicit_invocation: false` in `agents/openai.yaml`. The page shows
+only CLI invocation: `/skills` selection or `$name`. Detection reuses the Agent
+page's `Agent.Detected() && !Agent.CLIMissing()` rule, including its shared-app
+evidence and Windows uncertainty handling; it is not a strict CLI-presence test.
+Detection never substitutes for capability verification: every Codex target
+requires the CLI native inventory. A detected target without a CLI entry stays
+unverified and blocks new deployment; there is no Desktop-only bypass. Existing
+protected files and selections remain until explicitly removed. No separate
+Desktop invocation, reload or acceptance guidance is shown.
+Discovery of a non-ASCII skill name does not certify direct `$name` expansion:
+the Windows acceptance record confirms English explicit expansion but leaves
+Chinese direct invocation and interactive selection unaccepted. Consult the
+[native verification record](../pi-prompt-verification.md#codex-cli-and-deepseek-harness-acceptance)
+before claiming those behaviors work.
+The shared physical skill files retain the same ownership protection. Legacy
+`codex-desktop` selections are normalized to `codex` and deduplicated on read and
+mutation; reads do not rewrite files.
+Legacy request ids remain accepted, while saved selections use `codex`.
+The editor preserves existing selections when a passive check fails, including
+an unavailable target. Such a checkbox stays selected and can be cleared; once
+cleared, the blocked target cannot be selected again. Editing the body alone
+must not silently remove a deployment.
+DeepSeek Harness writes a native `SKILL.md` with `disable-model-invocation: true`
+and `user-invocable: true`, invoked as `/name`. Its native names require lowercase
+ASCII letters/digits separated by single hyphens; incompatible names are not
+renamed. Native argument processing remains the Harness's. Reload instructions
+appear only for deployed targets and never suggest fixing a failed check with
+`/reload`. Native invocation acceptance stays separate from conflict/deployment
+status.
 
-[`prompt_conflicts.go`](../../internal/library/prompt_conflicts.go) checks the
-known built-in names and aliases, user commands and skills, local plugin
-declarations, and the Library's registered projects. Passive checks never run
-extensions. A conflict blocks only that target. An unreadable or malformed
-source is unknown and blocks deployment; this scan does not claim to enumerate
-every dynamically registered command in an arbitrary future session. Save checks
-again under the library lock. Reads show each target's state and source, and
-missing bodies are never treated as empty text.
+[`prompt_conflicts.go`](../../internal/library/prompt_conflicts.go) checks known
+built-ins and aliases, user commands/skills, plugin declarations and registered
+projects. An unreadable, malformed or incomplete source remains unknown and
+blocks new deployment to that target, without deleting existing protected
+artifacts. This does not claim coverage of future dynamically added commands.
+Save rechecks passive evidence under the Library lock. Missing template bodies
+are never treated as empty text.
 
-Only the editor's **Check availability** starts Pi when extensions are present.
-[`prompt_runtime.go`](../../internal/library/prompt_runtime.go) asks Pi 0.87.1's
-native RPC `get_commands` in each distinct global/registered-project context,
-outside the Library lock. It submits no prompt, reload or authorization response.
-Loading extensions and their startup events can still execute code and cause
-external side effects; the warning is beside the button. This is not a sandbox.
-The check does not write Library templates or deployment files. Opening the page,
-refreshing it, saving and normal sync do not start Pi. `check` accepts
-`passive: true` for a save's preflight; omitted/false requests a fresh runtime
-check. The HTTP request context cancels the process, with a 30-second limit per
-context (including the version probe), bounded output and `proc.Tree` cleanup
-on Windows. Other targets continue when Pi fails.
+Only explicit **Check availability** may start verification processes. Opening,
+refreshing, passive check (`passive: true`), saving, target toggles and sync never
+start a Harness. Checks run outside the Library lock, with cancellation, bounded
+output, Windows `proc.Tree` cleanup and a 30-second external-probe budget per
+context (Codex/DSH share a bounded probe across their context list). No check
+submits a prompt, creates an agent task or answers an authorization request.
+Extension/plugin startup can still execute code and cause external side effects;
+the warning beside the button explicitly states this is not a sandbox.
+Checks do not write Library templates or deployment files.
 
-The process-local cache keeps the complete command list, independently of the
-template name; `/skill:name` does not occupy `/name`. It is neither serialized
-nor backed up. [`prompt_runtime_sources.go`](../../internal/library/prompt_runtime_sources.go)
-binds it to the executable/managed release selector, config, environment, working
-directories and registered projects, plus observable resource stamps. Like the
-skill comparison cache, stamps cover path/type/size/mtime; a rewrite preserving
-size and mtime or an extension's untracked external inputs can escape them.
-Managed template artifacts are excluded and remain protected by deployment
-hashes. Manual checking discards the prior answer, and only the newest concurrent
-check publishes its result. Sources changed during startup or unreadable sources
-discard the answer. Save and sync recheck static conflicts and cache validity;
-expired/failed verification preserves existing owned deployments and blocks only
-new Pi deployment until checking again.
+Pi's [`prompt_runtime.go`](../../internal/library/prompt_runtime.go) always queries
+native RPC `get_commands`, even with no user extensions, so installation-bundled
+extension commands are included. [`prompt_catalog.go`](../../internal/library/prompt_catalog.go)
+reads the actual installation's command catalog and interactive dispatcher with
+a JavaScript AST parser, without importing/executing those modules. Unrecognized
+catalog/dispatcher structure reports missing built-in verification rather than
+accepting an arbitrary release. `/skill:name` and `/name` are separate namespaces.
+[`prompt_runtime_sources.go`](../../internal/library/prompt_runtime_sources.go)
+checks existing project trust (including `.pi/mcp.json`), never changes trust,
+and fingerprints executable/release metadata, config, environment, global and
+registered-project working directories and observable resource contents. Missing
+local resources or unresolved npm/Git package declarations remain unknown even
+when offline Pi returns an empty list.
 
-Unknown versions, failed/partial loads, invalid or oversized protocol output,
-interactive requests and untrusted project resources remain unverified. Pi's
-existing nearest trust decision or `defaultProjectTrust: always` is honored;
-magpie sends no trust response and does not write trust decisions. Extension
-startup effects remain outside that guarantee. Offline Pi can silently omit
-missing packages, so missing configured local resources and npm/Git packages
-whose resolution has not been verified remain unknown even with a successful
-empty RPC list. Native invocation acceptance remains separate from successful
-command enumeration.
+[`prompt_native.go`](../../internal/library/prompt_native.go) uses Codex's original
+`app-server`: initialize, initialized and `skills/list` only. Every distinct
+home/registered-project context must return explicit skills/errors lists; loading
+errors, disabled generated skills and malformed output block deployment. Returned
+skill locations are discovered, fingerprinted, then enumerated again to avoid
+trusting an inventory whose resources changed during discovery. A CLI result
+never certifies Desktop interaction or implicit-invocation policy acceptance.
+
+[`prompt_dsh.go`](../../internal/library/prompt_dsh.go) runs the original DeepSeek
+Harness through a separate native client in a physical temporary profile/storage
+copy. Only executable dependency directories are linked. Original config/state
+are not linked or rewritten; legacy settings imports, executable YAML and
+unmappable resource/storage overrides stop before startup. The client queries
+native plugin/preset inventories and temporary sessions' commands/skills, without
+injecting a check plugin or sending a prompt. Current native `skills/list` drops
+the provider completeness flag and effective provider/resource mapping. Therefore
+a successful list, clean logs or active plugins cannot certify completeness;
+these configurations remain unverified with the uncovered providers explained.
+The adapter deliberately does not enable DSH by assuming completeness. Future
+support requires independent complete-source evidence, not a version/hash gate
+or a relaxed check.
+
+Inventories are complete-list, process-local caches, independent of the template
+name and excluded from backups/config sync. Their keys include effective launch
+and config paths, project contexts, environment and resource content fingerprints.
+Managed, unedited template artifacts are excluded from stamps and protected by
+ownership hashes. Resource changes/read failures invalidate evidence. Fingerprints
+cannot cover arbitrary external inputs used by extension code. Manual checks
+always discard prior evidence; only the newest concurrent check may publish.
+Pre/post-source mismatch discards the answer. Passive save/sync recheck sources
+and static conflicts; stale evidence blocks only that target's new deployment.
 
 [`prompt_sync.go`](../../internal/library/prompt_sync.go) records individual
-deployment paths and hashes in `Applied.Prompts`. A template change syncs only
+deployment paths and hashes in `Applied.Prompts`. Codex CLI/Desktop share files
+by physical identity, including Windows aliases, through one Codex selection.
+Legacy Desktop ownership is recognized without rewriting deployed files and may
+transfer to the canonical target even while its check is pending; this does not
+mark a new deployment successful. Turning Codex off retires unchanged owned
+artifacts under either legacy id, retaining and reporting external edits.
+A template change syncs only
 templates, and the regular sync also applies them. Edits made outside magpie
 are kept and reported. A new conflicting command retires only an unchanged
 owned deployment. New files are published without replacing an intervening
@@ -139,7 +193,7 @@ Unknown new target ids fail the request. New blocked targets are omitted with
 individual `Result.Problems`; existing selections survive failed checks unless
 explicitly removed. Deployments still use passive conflict checks, ownership
 hashes and backups, with independent failures per target. This endpoint never
-starts Pi. All mutations answer `part: "prompts"`, the current `PromptsView` and
+starts a Harness. All mutations answer `part: "prompts"`, the current `PromptsView` and
 `Result`, preserving other Library sections and their unsaved drafts. No new
 persistence fields or harness adapters are involved.
 
@@ -159,7 +213,7 @@ agent control. Reload hints describe only successfully deployed targets.
 With at least two eligible targets, All turns those targets on or off,
 leaving blocked selections alone. A selected blocked target can still be removed
 individually. Clicking an unselected blocked target explains why in the list;
-expired Pi checks direct the user to the editor's Check availability, without
+expired native checks direct the user to the editor's Check availability, without
 opening it or running extensions automatically.
 
 Each template row reuses the skills' hover/focus delete button, between the

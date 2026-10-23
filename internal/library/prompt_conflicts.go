@@ -20,7 +20,7 @@ func (l *Library) promptOwns(id, pid, path string) bool {
 }
 
 func promptSamePath(a, b string) bool {
-	if runtime.GOOS == "windows" && strings.EqualFold(filepath.Clean(a), filepath.Clean(b)) {
+	if runtime.GOOS == "windows" {
 		x, ex := os.Stat(a)
 		y, ey := os.Stat(b)
 		if ex == nil && ey == nil {
@@ -31,16 +31,29 @@ func promptSamePath(a, b string) bool {
 }
 
 func (l *Library) promptOwnedHash(id, pid, path string) string {
-	a := l.Applied[id]
-	if a == nil || a.Prompts[pid] == nil {
-		return ""
+	ids := []string{id}
+	if id == "codex" || id == "codex-desktop" {
+		ids = []string{id, "codex", "codex-desktop"}
 	}
-	for p, hash := range a.Prompts[pid].Files {
-		if promptSamePath(p, path) {
-			return hash
+	var fallback string
+	cur, _ := os.ReadFile(path)
+	for _, key := range ids {
+		a := l.Applied[key]
+		if a == nil || a.Prompts[pid] == nil {
+			continue
+		}
+		for p, hash := range a.Prompts[pid].Files {
+			if promptSamePath(p, path) {
+				if fallback == "" {
+					fallback = hash
+				}
+				if promptHash(cur) == hash {
+					return hash
+				}
+			}
 		}
 	}
-	return ""
+	return fallback
 }
 
 func (l *Library) promptState(t PromptTarget, p *Prompt, text string) PromptState {
@@ -55,7 +68,7 @@ func (l *Library) promptState(t PromptTarget, p *Prompt, text string) PromptStat
 		return s
 	}
 	allPresent := true
-	if t.ID == "codex-desktop" {
+	if t.ID == "codex-desktop" || t.ID == "codex" {
 		path, err := promptCodexDisabled(t, files)
 		if err != nil {
 			s.Status, s.Reason, s.Source = "unverified", "Could not check command sources", err.Error()
@@ -67,7 +80,7 @@ func (l *Library) promptState(t PromptTarget, p *Prompt, text string) PromptStat
 		}
 	}
 	for _, name := range strings.Fields(promptBuiltins[t.ID]) {
-		if promptKey(name) == promptKey(p.Name) {
+		if t.ID != "pi" && promptKey(name) == promptKey(p.Name) {
 			s.Status, s.Reason, s.Source = "conflict", "This name is already a built-in command", t.Name
 			return s
 		}
@@ -105,10 +118,10 @@ func (l *Library) promptState(t PromptTarget, p *Prompt, text string) PromptStat
 		s.Status, s.Reason, s.Source = "conflict", "This name is already in use", source
 		return s
 	}
-	if a := l.Applied[t.ID]; allPresent && a != nil && a.Prompts[p.ID] != nil && len(a.Prompts[p.ID].Files) == len(files) {
+	if allPresent {
 		all := true
 		for path, b := range files {
-			if a.Prompts[p.ID].Files[path] != promptHash(b) {
+			if l.promptOwnedHash(t.ID, p.ID, path) != promptHash(b) {
 				all = false
 				break
 			}
@@ -141,12 +154,17 @@ func (l *Library) isPromptSkill(dir string) bool {
 
 func (l *Library) promptConflict(t PromptTarget, p *Prompt) (string, error) {
 	sources := []promptSource{{path: t.folder()}, {path: filepath.Join(t.dir, "skills"), skills: true}, {path: sharedSkillsDir(), skills: true}}
-	if t.ID == "codex-desktop" {
+	if t.ID == "codex-desktop" || t.ID == "codex" || t.ID == "dsh" {
 		sources[0].skills = true
 		sources = append(sources, promptSource{path: filepath.Join(t.dir, "skills", ".system"), skills: true})
 	}
 	if t.ID == "pi" {
 		if hit, err := l.piCommandConflict(t, p); err != nil || hit != "" {
+			return hit, err
+		}
+	}
+	if t.ID == "codex" || t.ID == "dsh" {
+		if hit, err := l.nativePromptConflict(t, p); err != nil || hit != "" {
 			return hit, err
 		}
 	}
@@ -156,14 +174,17 @@ func (l *Library) promptConflict(t PromptTarget, p *Prompt) (string, error) {
 	}
 	sources = append(sources, extra...)
 	sources = append(sources, promptSource{path: filepath.Join(t.dir, "plugins"), plugins: true})
-	projectFolder := map[string]string{"claude": ".claude", "pi": ".pi", "codex-desktop": ".codex"}[t.ID]
+	projectFolder := map[string]string{"claude": ".claude", "pi": ".pi", "codex-desktop": ".codex", "codex": ".codex", "dsh": ".dsh"}[t.ID]
 	for _, project := range l.Projects {
 		dir := filepath.Join(project.Dir, projectFolder)
 		commands := "commands"
 		if t.ID == "pi" {
 			commands = "prompts"
 		}
-		sources = append(sources, promptSource{path: filepath.Join(dir, commands)}, promptSource{path: filepath.Join(dir, "skills"), skills: true}, promptSource{path: filepath.Join(project.Dir, ".agents", "skills"), skills: true})
+		if t.ID != "codex" && t.ID != "dsh" {
+			sources = append(sources, promptSource{path: filepath.Join(dir, commands)})
+		}
+		sources = append(sources, promptSource{path: filepath.Join(dir, "skills"), skills: true}, promptSource{path: filepath.Join(project.Dir, ".agents", "skills"), skills: true})
 	}
 	seen := map[string]bool{}
 	for _, source := range sources {
@@ -252,7 +273,7 @@ func (l *Library) scanPromptSource(id string, p *Prompt, source promptSource) (s
 			}
 			if id == "pi" {
 				name = "skill:" + name
-			} else {
+			} else if id != "codex" && id != "dsh" {
 				alias = filepath.Base(filepath.Dir(path))
 			}
 		} else {

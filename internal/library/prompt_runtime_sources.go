@@ -1,11 +1,8 @@
 package library
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,16 +14,24 @@ import (
 type piCommandSnapshot struct {
 	bin, key string
 	dirs     []string
-	dynamic  bool
+	builtins []string
 }
 
-// Snapshot only observable command sources, not sessions or telemetry. Stamps
-// follow the skill cache's path/type/size/mtime contract; they are not a claim
+// Snapshot observable command sources by content, not sessions or telemetry.
+// Resource hashes detect changes; they are not a claim
 // that extension code cannot consult other files, the network or the clock.
 func (l *Library) piCommandSnapshot(t PromptTarget) (piCommandSnapshot, error) {
 	s := piCommandSnapshot{bin: proc.FindTool("pi")}
 	if s.bin == "" {
 		return s, &promptRuntimeError{"Could not start Pi command verification", t.dir}
+	}
+	root, err := piInstalledPackage(t, s.bin)
+	if err != nil {
+		return s, err
+	}
+	s.builtins, err = piInstalledBuiltins(root)
+	if err != nil {
+		return s, err
 	}
 	dirs := []string{home()}
 	for _, p := range l.Projects {
@@ -45,7 +50,7 @@ func (l *Library) piCommandSnapshot(t PromptTarget) (piCommandSnapshot, error) {
 		}
 	}
 	slices.Sort(s.dirs)
-	roots := []string{s.bin, filepath.Join(filepath.Dir(s.bin), "pi-launcher.js"), filepath.Join(t.dir, "install", "current-version"), filepath.Join(t.dir, "settings.json"), filepath.Join(t.dir, "trust.json"), filepath.Join(t.dir, "models.json"), filepath.Join(t.dir, "auth.json"), sharedSkillsDir()}
+	roots := []string{s.bin, filepath.Join(root, "package.json"), filepath.Join(root, "dist"), filepath.Join(filepath.Dir(s.bin), "pi-launcher.js"), filepath.Join(t.dir, "install", "current-version"), filepath.Join(t.dir, "settings.json"), filepath.Join(t.dir, "trust.json"), filepath.Join(t.dir, "models.json"), filepath.Join(t.dir, "auth.json"), sharedSkillsDir()}
 	// A managed launcher keeps the selected release outside its bin directory.
 	if b, err := os.ReadFile(filepath.Join(t.dir, "install", "current-version")); err == nil {
 		v := strings.TrimSpace(string(b))
@@ -82,14 +87,7 @@ func (l *Library) piCommandSnapshot(t PromptTarget) (piCommandSnapshot, error) {
 				return s, fmt.Errorf("%s: %w", path, err)
 			}
 		}
-		roots = append(roots, path, filepath.Join(base, "extensions"), filepath.Join(base, "prompts"), filepath.Join(base, "skills"))
-		es, err := os.ReadDir(filepath.Join(base, "extensions"))
-		if err != nil && !os.IsNotExist(err) {
-			return s, err
-		}
-		if len(cfg.Extensions) > 0 || len(cfg.Packages) > 0 || len(es) > 0 {
-			s.dynamic = true
-		}
+		roots = append(roots, path, filepath.Join(base, "mcp.json"), filepath.Join(base, "extensions"), filepath.Join(base, "prompts"), filepath.Join(base, "skills"))
 		for _, list := range [][]string{cfg.Extensions, cfg.Prompts, cfg.Skills} {
 			for _, entry := range list {
 				if strings.HasPrefix(entry, "-") || strings.HasPrefix(entry, "!") {
@@ -150,83 +148,16 @@ func (l *Library) piCommandSnapshot(t PromptTarget) (piCommandSnapshot, error) {
 			}
 		}
 	}
-	h := sha256.New()
-	fmt.Fprintf(h, "%s\x00%s\x00%s\n", t.dir, s.bin, strings.Join(s.dirs, "\x00"))
-	// Environment values are hashed only; credentials never appear in the result.
-	env := os.Environ()
-	slices.Sort(env)
-	fmt.Fprintln(h, strings.Join(env, "\x00"))
-	seen := map[string]bool{}
-	count := 0
-	var walk func(string) error
-	walk = func(path string) error {
-		path = filepath.Clean(path)
-		if seen[path] {
-			return nil
-		}
-		seen[path] = true
-		count++
-		if count > 50000 {
-			return fmt.Errorf("Pi command source scan exceeds 50000 entries")
-		}
-		for _, a := range l.Applied {
-			for _, p := range a.Prompts {
-				for owned := range p.Files {
-					if promptSamePath(path, owned) {
-						return nil
-					}
-				}
-			}
-		}
-		fi, err := os.Lstat(path)
-		if os.IsNotExist(err) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if fi.Mode()&fs.ModeSymlink != 0 {
-			real, err := filepath.EvalSymlinks(path)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(h, "link:%s:%s\n", path, real)
-			return walk(real)
-		}
-		if fi.IsDir() {
-			es, err := os.ReadDir(path)
-			if err != nil {
-				return err
-			}
-			for _, e := range es {
-				if e.Name() == ".git" {
-					continue
-				}
-				if err := walk(filepath.Join(path, e.Name())); err != nil {
-					return err
-				}
-			}
-			return nil
-		}
-		fmt.Fprintf(h, "%s\x00%d\x00%d\x00%d\n", path, fi.Mode(), fi.Size(), fi.ModTime().UnixNano())
-		return nil
-	}
-	slices.Sort(roots)
-	for _, path := range roots {
-		if err := walk(path); err != nil {
-			return s, err
-		}
-	}
-	s.key = hex.EncodeToString(h.Sum(nil))
-	return s, nil
+	s.key, err = l.promptResourceKey(t, s.bin, s.dirs, roots)
+	return s, err
 }
 
-// RPC has no initial project-trust UI in Pi 0.87.1. A successful command list
+// RPC has no initial project-trust UI. A successful command list
 // could otherwise omit the project's extensions without any error. Honor the
 // existing nearest trust decision/default, never grant trust from magpie.
 func piProjectTrusted(agentDir, cwd string) error {
 	requires := false
-	for _, entry := range []string{"settings.json", "extensions", "skills", "prompts", "themes", "SYSTEM.md", "APPEND_SYSTEM.md"} {
+	for _, entry := range []string{"settings.json", "mcp.json", "extensions", "skills", "prompts", "themes", "SYSTEM.md", "APPEND_SYSTEM.md"} {
 		_, err := os.Stat(filepath.Join(cwd, ".pi", entry))
 		if err == nil {
 			requires = true

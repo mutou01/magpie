@@ -7,7 +7,13 @@ icons, blocked explanations, target-only requests, coalesced repeated clicks,
 rollback on HTTP failure, keyboard focus/scroll retention, All with retained
 unverified selections, and individual removal of an expired target. It also
 keeps the editor's conflict checks, passive save preflight and failed-save draft
-coverage. Both Chromium and WebKit run English, Simplified/Traditional Chinese,
+coverage. One Codex control manages the shared native skill files and shows only
+the CLI's `/skills` / `$name` entry points, with no Desktop control or usage note.
+An existing unavailable Codex selection survives passive save preflight and can
+be explicitly removed; it cannot be enabled again while unavailable. Reload text appears only on
+successfully deployed targets. The explicit check warns
+that native extension/plugin startup can cause external side effects and is
+not a sandbox. Both Chromium and WebKit run English, Simplified/Traditional Chinese,
 Japanese and German, with light/dark themes and narrow windows. `ARTIFACT_DIR`
 retains editor and wide/narrow list screenshots. API fixtures are isolated from
 user templates, agent configuration and live Pi processes.

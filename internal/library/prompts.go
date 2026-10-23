@@ -70,12 +70,29 @@ type PromptChange struct {
 	Name   string   `json:"name"`
 	Text   string   `json:"text"`
 	Agents []string `json:"agents"`
-	// Passive is used by a save's preflight: it must not load extensions.
+	// Passive is used by save preflight: it must not start Harnesses or load extensions/plugins.
 	Passive bool `json:"passive,omitempty"`
 }
 
 func promptPath(id string) string  { return filepath.Join(Dir(), "prompts", id+".md") }
 func promptKey(name string) string { return strings.ToLower(norm.NFKC.String(name)) }
+
+// Keep the same Codex selection as skill management. Older clients and bundles
+// may still name Desktop; ownership stays under its original id until sync can
+// safely retire or transfer it, without rewriting hashes or claiming acceptance.
+func promptAgents(ids []string) []string {
+	if ids == nil {
+		return nil
+	}
+	out := append([]string{}, ids...)
+	for i, id := range out {
+		if id == "codex-desktop" {
+			out[i] = "codex"
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
 
 func (l *Library) putPromptText(id, text string) error {
 	path := promptPath(id)
@@ -154,7 +171,7 @@ func (l *Library) checkPrompt(c PromptChange) error {
 		if err := checkAgent(id); err != nil {
 			return err
 		}
-		if promptBuiltins[id] == "" {
+		if _, ok := promptTargetByID(promptTargets(), id); !ok {
 			return fmt.Errorf("native templates are unavailable for target %s", id)
 		}
 	}
@@ -181,7 +198,7 @@ func ReadPrompts() (*PromptsView, error) {
 }
 
 // CheckPrompt explicitly checks availability. It does not deploy files, but
-// Pi's runtime check loads extensions, whose startup code may have side effects.
+// native runtime checks load extensions/plugins whose startup may have side effects.
 func CheckPrompt(c PromptChange) ([]PromptState, error) {
 	return CheckPromptContext(context.Background(), c)
 }
@@ -189,6 +206,7 @@ func CheckPrompt(c PromptChange) ([]PromptState, error) {
 // CheckPromptContext lets the HTTP request cancel an explicit runtime check.
 func CheckPromptContext(ctx context.Context, c PromptChange) ([]PromptState, error) {
 	c.Name = strings.TrimSpace(c.Name)
+	c.Agents = promptAgents(c.Agents)
 	mu.Lock()
 	l, err := load()
 	if err == nil {
@@ -201,6 +219,11 @@ func CheckPromptContext(ctx context.Context, c PromptChange) ([]PromptState, err
 	if !c.Passive {
 		if t, ok := promptTargetByID(promptTargets(), "pi"); ok && t.Detected {
 			l.checkPiCommands(ctx, t)
+		}
+		for _, target := range promptTargets() {
+			if target.Detected && (target.ID == "codex" || target.ID == "dsh") {
+				l.checkNativePromptCommands(ctx, target)
+			}
 		}
 	}
 	mu.Lock()
@@ -249,6 +272,7 @@ func changePrompts(f func(*Library) error) (*Result, error) {
 // SavePrompt keeps a template independently of the active instruction set.
 func SavePrompt(c PromptChange) (*Result, error) {
 	c.Name = strings.TrimSpace(c.Name)
+	c.Agents = promptAgents(c.Agents)
 	if err := checkPromptText(c.Text); err != nil {
 		return nil, err
 	}
@@ -292,6 +316,7 @@ func SetPromptAgents(id string, agents []string) (*Result, error) {
 	if agents == nil {
 		return nil, fmt.Errorf("prompt targets must be a list")
 	}
+	agents = promptAgents(agents)
 	var blocked []Problem
 	res, err := changePrompts(func(l *Library) error {
 		p := l.prompt(id)

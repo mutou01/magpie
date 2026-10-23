@@ -17,9 +17,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.setDefaultTimeout(3000);
       const errors = [], sent = [];
       page.on("pageerror", (e) => errors.push(e.message));
-      const targets = [{ id: "claude", name: "Claude Code", icon: "claudecode-color", detected: true, verification: "pending", reload: "Restart the harness to load updated commands" }, { id: "codex-desktop", name: "Codex Desktop", icon: "codex-color", detected: true, shared: true, verification: "pending", reload: "Skills refresh automatically; restart Codex Desktop if the command is missing" }, { id: "pi", name: "Pi", icon: "pi", detected: true, verification: "pending", reload: "Run /reload to load updated commands" }];
-      let items = [], failSave = true, releaseCheck, holdAgents = false, releaseAgents, failAgents = false;
-      const states = [{ agent: "claude", status: "available" }, { agent: "codex-desktop", status: "conflict", reason: "This name is already in use", source: "/fixture/.agents/skills/审查/SKILL.md" }, { agent: "pi", status: "unverified", reason: "Check Pi command availability again", source: "/fixture/.pi/agent" }];
+      const targets = [{ id: "claude", name: "Claude Code", icon: "claudecode-color", detected: true, verification: "pending", reload: "Restart the harness to load updated commands" }, { id: "codex", name: "Codex", invocation: "/skills · $<name>", icon: "codex-color", detected: true, shared: true, verification: "pending", reload: "Restart the harness to load updated commands" }, { id: "pi", name: "Pi", icon: "pi", detected: true, verification: "pending", reload: "Run /reload to load updated commands" }];
+      targets.push({ id: "dsh", name: "DeepSeek Harness", icon: "deepseek-color", detected: true, verification: "pending", invocation: "/<name>" });
+      let items = [], failSave = true, releaseCheck, checkStarted, holdAgents = false, releaseAgents, failAgents = false;
+      const states = [{ agent: "claude", status: "available" }, { agent: "codex", status: "conflict", reason: "This name is already in use", source: "/fixture/.agents/skills/审查/SKILL.md" }, { agent: "pi", status: "unverified", reason: "Check Pi command availability again", source: "/fixture/.pi/agent" }];
+      states.push({ agent: "dsh", status: "unverified", reason: "DeepSeek Harness skill source completeness could not be verified", source: "fixture/native-skill-provider" });
       const theme = ["ja", "de"].includes(lang) ? "dark" : "light";
       const prompts = () => ({ items, targets });
       await ctx.addInitScript(() => localStorage.setItem("magpie.libTab", "instructions"));
@@ -36,6 +38,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         if (p.startsWith("/api/library/prompts/")) {
           const body = route.request().postDataJSON(); sent.push({ p, body });
           if (p.endsWith("/check")) {
+            checkStarted?.();
             if (body.name === "waiting-template") await new Promise(resolve => { releaseCheck = resolve; });
             return route.fulfill({ json: states });
           }
@@ -57,6 +60,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator('button[data-view="library"]').click();
       await page.locator(".lib-prompts").waitFor().catch(async e => { throw new Error(e.message + "\n" + JSON.stringify(errors) + "\n" + await page.locator("#view-library").textContent()); });
       assert((await page.locator(".lib-prompts").textContent()).includes(titles[lang]));
+      if (lang === "en") assert((await page.locator(".lib-prompts").textContent()).includes("Use the native invocation shown for each harness"), "intro must not promise /name for Codex CLI");
       const finder = page.locator(".lib-prompts .lib-find");
       const refreshList = async () => {
         const old = await page.locator(".lib-prompts .lib-cardhead button").first().elementHandle();
@@ -72,7 +76,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert(warning.includes({ en: "loads extensions", zh: "加载扩展", "zh-TW": "載入擴充功能", ja: "拡張機能", de: "Erweiterungen" }[lang]), "runtime side effects are explained in every language");
       await page.locator('[data-prompt="name"]').fill("waiting-template");
       await page.locator('[data-prompt="text"]').fill("Draft");
-      const preflight = page.waitForRequest(r => r.url().endsWith("/prompts/check"));
+      // Request events precede route handlers. Wait until the fixture has
+      // actually recorded the request before asserting its body.
+      const preflight = new Promise(resolve => { checkStarted = resolve; });
       await page.locator(".lib-prompt-save").click();
       await preflight;
       assert.equal(sent.at(-1).body.passive, true, "save's preflight must not load Pi extensions");
@@ -83,10 +89,17 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator('[data-prompt="name"]').fill("审查");
       await page.locator('[data-prompt="text"]').fill("检查边界条件。");
       await page.locator(".lib-prompt-check").click();
-      await page.locator('.lib-prompt-target[data-agent="codex-desktop"] .lib-prompt-reason').waitFor();
+      await page.locator('.lib-prompt-target[data-agent="codex"] .lib-prompt-reason').waitFor();
+      assert.equal(await page.locator('.lib-prompt-target[data-agent="codex"]').count(), 1, "CLI and Desktop have one Codex configuration");
+      assert.equal(await page.locator('.lib-prompt-target[data-agent="codex-desktop"]').count(), 0, "Desktop is not a second target");
       assert.equal((await page.locator("#status").textContent()).trim(), "", "a fresh availability check clears the previous save error");
-      assert((await page.locator('.lib-prompt-target[data-agent="codex-desktop"]').textContent()).includes("/fixture/.agents/skills/审查/SKILL.md"));
-      assert(await page.locator('.lib-prompt-target[data-agent="codex-desktop"] input').isDisabled());
+      assert((await page.locator('.lib-prompt-target[data-agent="codex"]').textContent()).includes("/fixture/.agents/skills/审查/SKILL.md"));
+      assert(await page.locator('.lib-prompt-target[data-agent="codex"] input').isDisabled());
+      assert((await page.locator('.lib-prompt-target[data-agent="codex"]').textContent()).includes("/skills · $<name>"), "unified Codex shows the CLI entry points");
+      assert(!(await page.locator('.lib-prompt-target[data-agent="codex"]').textContent()).includes("Desktop"), "Codex describes only CLI usage, without a separate Desktop note");
+      assert((await page.locator('.lib-prompt-target[data-agent="dsh"]').textContent()).includes("fixture/native-skill-provider"), "DSH explains uncovered native providers");
+      assert(await page.locator('.lib-prompt-target[data-agent="dsh"] input').isDisabled(), "incomplete DSH sources cannot be enabled");
+      assert(!(await page.locator('.lib-prompt-target[data-agent="pi"]').textContent()).includes("/reload"), "reload is a deployment hint, not a check-error remedy");
       assert.equal(sent.at(-1).body.passive, false, "manual check explicitly permits runtime enumeration");
       const checksBefore = sent.filter(s => s.p.endsWith("/check")).length;
       await page.locator(".lib-prompt-check").click();
@@ -109,8 +122,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(sent.filter(s => s.p.endsWith("/save")).length, 2);
       assert.deepEqual(sent.find(s => s.p.endsWith("/save")).body.agents, ["claude"]);
       const chip = id => page.locator(`.lib-prompt-row .lib-ag[data-agent="${id}"]`);
-      assert.equal(await page.locator(".lib-prompt-row .lib-ag[data-agent]").count(), 3, "templates show native target icons");
+      assert.equal(await page.locator(".lib-prompt-row .lib-ag[data-agent]").count(), targets.length, "templates show native target icons");
       assert.equal(await chip("claude").getAttribute("aria-pressed"), "true");
+      assert(!(await chip("codex").getAttribute("title")).includes("Desktop"), "the single Codex icon explains CLI usage only");
       assert.equal((await page.locator(".lib-prompt-row .lib-tags").textContent()).trim(), "", "native acceptance pending is not a permanent list badge");
       assert((await chip("claude").getAttribute("title")).includes({ en: "Native behavior", zh: "原生行为", "zh-TW": "原生行為", ja: "動作は未検証", de: "Natives Verhalten" }[lang]), "native acceptance remains explained on the icon");
       assert((await chip("pi").getAttribute("class")).includes("warn"), "unavailable targets retain their warning dot");
@@ -119,7 +133,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const beforeBlocked = sent.length;
       await chip("pi").press("Space");
       assert((await page.locator("#status").textContent()).includes({ en: "template editor", zh: "模板编辑框", "zh-TW": "範本編輯器", ja: "テンプレートエディター", de: "Vorlageneditor" }[lang]), "expired checks explain where to recheck");
-      await chip("codex-desktop").press("Space");
+      await chip("codex").press("Space");
       assert((await page.locator("#status").textContent()).includes("/fixture/.agents/skills/审查/SKILL.md"));
       assert.equal(await page.locator(".lib-prompt-editor").count(), 0, "a chip's keyboard action must not open the editor");
       assert.equal(sent.length, beforeBlocked, "a blocked target never writes or starts runtime checks");
@@ -144,9 +158,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await page.locator(".lib-prompt-editor").count(), 0);
       // Two eligible targets get the same All control as skills. A retained,
       // expired Pi selection is excluded from bulk changes but stays removable.
-      Object.assign(states.find(s => s.agent === "codex-desktop"), { status: "available", reason: "", source: "" });
+      Object.assign(states.find(s => s.agent === "codex"), { status: "available", reason: "", source: "" });
       items[0].agents.push("pi");
-      items[0].states = items[0].states.map(s => s.agent === "codex-desktop" ? { ...states.find(x => x.agent === s.agent) } : s);
+      items[0].states = items[0].states.map(s => s.agent === "codex" ? { ...states.find(x => x.agent === s.agent) } : s);
       await refreshList();
       const all = page.locator('.lib-prompt-row .lib-ag[data-all]');
       await all.waitFor();
@@ -157,7 +171,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const scrollBefore = await page.locator("#view-library").evaluate(e => e.scrollTop);
       await all.press("Space");
       await finishToggle();
-      assert.deepEqual(sent.filter(s => s.p.endsWith("/agents")).at(-1).body.agents.sort(), ["claude", "codex-desktop", "pi"]);
+      assert.deepEqual(sent.filter(s => s.p.endsWith("/agents")).at(-1).body.agents.sort(), ["claude", "codex", "pi"]);
       assert.equal(await all.getAttribute("aria-pressed"), "true");
       assert(!(await page.locator("#status").textContent()).includes("/reload"), "reload hints only describe successfully deployed targets");
       assert(await all.evaluate(e => e === document.activeElement), "in-place updates preserve keyboard focus");
@@ -188,14 +202,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.deepEqual(sent.filter(s => s.p.endsWith("/agents")).at(-1).body.agents, [], "an abnormal target can be explicitly deselected");
       await chip("claude").press("Space");
       await finishToggle();
-      items[0].agents = ["claude", "codex-desktop"];
+      items[0].agents = ["claude", "codex"];
       await refreshList();
       await all.waitFor();
       assert.equal(await all.getAttribute("aria-pressed"), "false");
       await all.press("Space");
       await finishToggle();
-      assert.deepEqual(sent.filter(s => s.p.endsWith("/agents")).at(-1).body.agents.sort(), ["claude", "codex-desktop"], "All retries selected targets that are not actually deployed");
-      Object.assign(states.find(s => s.agent === "codex-desktop"), { status: "conflict", reason: "This name is already in use" });
+      assert.deepEqual(sent.filter(s => s.p.endsWith("/agents")).at(-1).body.agents.sort(), ["claude", "codex"], "All retries selected targets that are not actually deployed");
+      Object.assign(states.find(s => s.agent === "codex"), { status: "conflict", reason: "This name is already in use" });
       await all.press("Space");
       await finishToggle();
       assert.equal(await all.count(), 0, "a newly blocked target removes an ineligible All control");
@@ -206,7 +220,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator(".lib-prompt-row").waitFor({ state: "detached" });
       assert.equal(await page.locator(".lib-prompt-row").count(), 0);
       await page.locator(".lib-prompt-search").fill("边界");
-      assert.equal(await page.locator(".lib-prompt-row .lib-ag[data-agent]").count(), 3, "filtering preserves target controls");
+      assert.equal(await page.locator(".lib-prompt-row .lib-ag[data-agent]").count(), targets.length, "filtering preserves target controls");
       // IME Enter remains in the search field; it must not activate a row or
       // open the template editor while composition is in progress.
       await page.locator(".lib-prompt-search").evaluate(e => {
@@ -271,7 +285,37 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator(".lib-prompt-save").click();
       await page.locator(".lib-prompt-editor").waitFor({ state: "detached" });
       assert(!sent.filter(s => s.p.endsWith("/save")).at(-1).body.agents.includes("pi"), "an explicit target removal is saved");
+      // A retained Codex target stays removable when the Agent reports it
+      // unavailable; merely editing the body must not clear that selection.
+      const codexState = states.find(s => s.agent === "codex");
+      Object.assign(codexState, { status: "available", reason: "", source: "" });
       await page.locator(".lib-prompt-row .name").click();
+      await page.locator(".lib-prompt-check").click();
+      await page.waitForFunction(() => !document.querySelector(".lib-prompt-check").disabled);
+      await page.locator('.lib-prompt-target[data-agent="codex"] input').check();
+      await page.locator(".lib-prompt-save").click();
+      await page.locator(".lib-prompt-editor").waitFor({ state: "detached" });
+      targets.find(a => a.id === "codex").detected = false;
+      Object.assign(codexState, { status: "unsupported", reason: "Not installed here" });
+      await refreshList();
+      await page.locator(".lib-prompt-row .name").click();
+      const goneCodex = page.locator('.lib-prompt-target[data-agent="codex"] input');
+      assert(await goneCodex.isChecked(), "unavailable existing Codex remains visibly selected");
+      assert(await goneCodex.isEnabled(), "unavailable existing Codex can be explicitly removed");
+      await page.locator('[data-prompt="text"]').fill("检查边界条件。Codex 不可用时保留选择");
+      await page.locator(".lib-prompt-save").click();
+      await page.locator(".lib-prompt-editor").waitFor({ state: "detached" });
+      assert(sent.filter(s => s.p.endsWith("/save")).at(-1).body.agents.includes("codex"), "passive preflight preserves unavailable existing Codex");
+      await page.locator(".lib-prompt-row .name").click();
+      await page.waitForFunction(() => document.activeElement?.dataset.prompt === "name");
+      await goneCodex.press("Space");
+      assert(!await goneCodex.isChecked());
+      assert(await goneCodex.isDisabled(), "an unavailable target cannot be re-enabled after explicit removal");
+      await page.locator(".lib-prompt-save").click();
+      await page.locator(".lib-prompt-editor").waitFor({ state: "detached" });
+      assert(!sent.filter(s => s.p.endsWith("/save")).at(-1).body.agents.includes("codex"));
+      await page.locator(".lib-prompt-row .name").click();
+      assert.equal(await page.locator('.lib-prompt-target[data-agent="codex"]').count(), 0, "unselected and unavailable Codex is not offered");
       await page.locator(".lib-prompt-remove").click();
       await page.locator(".lib-prompt-confirm-remove").click();
       await page.locator(".lib-prompt-row").waitFor({ state: "detached" });

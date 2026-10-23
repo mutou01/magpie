@@ -147,6 +147,9 @@ func load() (*Library, error) {
 	if err := checkPromptRecords(l.Prompts); err != nil {
 		return nil, fmt.Errorf("%s: %w", path(), err)
 	}
+	for _, p := range l.Prompts {
+		p.Agents = promptAgents(p.Agents)
+	}
 	l.heal() // magpie's own servers run this computer's magpie (self_here.go)
 	return l, nil
 }
@@ -154,7 +157,7 @@ func load() (*Library, error) {
 func (l *Library) save() error {
 	sort.Slice(l.Prompts, func(i, j int) bool { return promptKey(l.Prompts[i].Name) < promptKey(l.Prompts[j].Name) })
 	for _, p := range l.Prompts {
-		p.Agents = orNone(p.Agents)
+		p.Agents = orNone(promptAgents(p.Agents))
 	}
 	sort.Slice(l.MCP, func(i, j int) bool { return l.MCP[i].Name < l.MCP[j].Name })
 	sort.Slice(l.Skills, func(i, j int) bool { return l.Skills[i].Name < l.Skills[j].Name })

@@ -1,6 +1,6 @@
 package library
 
-// Pi 0.87.1: dist/modes/rpc/rpc-mode.js get_commands returns extension
+// Native Pi RPC get_commands returns extension
 // invocationName, prompt names and skill:<name>. Built-ins remain a separate
 // catalog. This protocol is not MCP and loading extensions is not a sandbox.
 
@@ -53,13 +53,18 @@ func (l *Library) piCommandConflict(t PromptTarget, p *Prompt) (string, error) {
 		piCommandChecks.Unlock()
 		return "", err
 	}
-	if !s.dynamic {
-		return "", nil
+	for _, name := range s.builtins {
+		if promptKey(name) == promptKey(p.Name) {
+			return "Pi /" + name, nil
+		}
 	}
 	piCommandChecks.Lock()
 	c, ok := piCommandChecks.m[t.dir]
 	piCommandChecks.Unlock()
 	if !ok || c.key != s.key {
+		piCommandChecks.Lock()
+		delete(piCommandChecks.m, t.dir)
+		piCommandChecks.Unlock()
 		return "", &promptRuntimeError{"Check Pi command availability again", t.dir}
 	}
 	if c.err != nil {
@@ -92,20 +97,15 @@ func (l *Library) checkPiCommands(ctx context.Context, t PromptTarget) {
 	delete(piCommandChecks.m, t.dir)
 	piCommandChecks.Unlock()
 	s, err := l.piCommandSnapshot(t)
-	if err != nil || !s.dynamic {
+	if err != nil {
 		return
 	}
 	c := piCommandCheck{key: s.key}
 	for _, cwd := range s.dirs {
 		step, cancel := context.WithTimeout(ctx, piCheckBudget)
-		version, err := piCommandVersion(step, s.bin, cwd)
-		var commands []piCommand
-		if err == nil && version != "0.87.1" {
-			err = &promptRuntimeError{"Pi version awaits command verification", version}
-		}
-		if err == nil {
-			commands, err = readPiCommands(step, s.bin, t.dir, cwd)
-		}
+		// Version is diagnostic only. The actual native response, not a
+		// release allow-list, determines whether enumeration is supported.
+		commands, err := readPiCommands(step, s.bin, t.dir, cwd)
 		cancel()
 		if err != nil {
 			c.err = err
@@ -142,34 +142,6 @@ func (l *Library) checkPiCommands(ctx context.Context, t PromptTarget) {
 		piCommandChecks.m[t.dir] = c
 	}
 	piCommandChecks.Unlock()
-}
-
-func piCommandVersion(ctx context.Context, bin, cwd string) (string, error) {
-	if ctx.Err() != nil {
-		return "", &promptRuntimeError{"Pi command verification timed out or was cancelled", cwd}
-	}
-	cmd := proc.Command(bin, "--version")
-	cmd.Dir = cwd
-	cmd.WaitDelay = time.Second
-	out, errs := &boundedPiOutput{}, &boundedPiOutput{}
-	cmd.Stdout, cmd.Stderr = out, errs
-	tree, err := proc.StartTree(cmd)
-	if err != nil {
-		return "", &promptRuntimeError{"Could not start Pi command verification", cwd}
-	}
-	done := make(chan error, 1)
-	go func() { done <- tree.Wait() }()
-	select {
-	case err := <-done:
-		if err != nil || errs.failed() || out.tooLarge {
-			return "", &promptRuntimeError{"Pi version awaits command verification", cwd}
-		}
-		return strings.TrimSpace(out.b.String()), nil
-	case <-ctx.Done():
-		tree.Kill()
-		<-done
-		return "", &promptRuntimeError{"Pi command verification timed out or was cancelled", cwd}
-	}
 }
 
 // boundedPiOutput is shared by stdout/stderr. A noisy extension cannot allocate

@@ -9,10 +9,28 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestPromptTemplatePiOriginalInstalledDefinitions(t *testing.T) {
+	root := os.Getenv("MAGPIE_VERIFY_PI_PACKAGE")
+	if root == "" {
+		t.Skip("explicit read-only original-installation verification")
+	}
+	names, err := piInstalledBuiltins(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"reload", "debug", "arminsayshi"} {
+		if !slices.Contains(names, name) {
+			t.Fatalf("actual native dispatcher missing /%s", name)
+		}
+	}
+	t.Logf("Read original installed catalog and interactive dispatcher: %d built-in names", len(names))
+}
 
 // A real child process speaking Pi 0.87.1's line-delimited RPC protocol.
 // It rejects any attempt to send a prompt rather than enumerate commands.
@@ -91,12 +109,14 @@ func piPromptState(t *testing.T, c PromptChange) PromptState {
 	return PromptState{}
 }
 
-func TestPromptTemplatePiRuntimeRejectsUnverifiedVersionAndUntrustedProject(t *testing.T) {
+func TestPromptTemplatePiRuntimeUsesCapabilitiesAndExistingProjectTrust(t *testing.T) {
 	t.Run("version", func(t *testing.T) {
 		h, _ := promptPiFixture(t)
-		write(t, filepath.Join(h, "pi-version"), "9.0.0")
-		if s := piPromptState(t, PromptChange{Name: "d"}); s.Status != "unverified" {
-			t.Fatalf("unverified Pi version accepted: %+v", s)
+		for _, version := range []string{"1.3.0", "9.0.0", "development"} {
+			write(t, filepath.Join(h, "pi-version"), version)
+			if s := piPromptState(t, PromptChange{Name: "d"}); s.Status != "available" {
+				t.Fatalf("complete native protocol rejected because of version %s: %+v", version, s)
+			}
 		}
 	})
 	t.Run("project trust", func(t *testing.T) {
@@ -129,6 +149,78 @@ func TestPromptTemplatePiRuntimeUsesRegisteredNamesAndFreshChecks(t *testing.T) 
 	}
 }
 
+func TestPromptTemplatePiRuntimeIncludesBundledExtensionsWithoutUserExtensions(t *testing.T) {
+	h, log := promptPiFixture(t)
+	if err := os.Remove(filepath.Join(h, ".pi/agent/extensions/observer.ts")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(h, "pi-commands.json"), `[{"name":"mcp","source":"extension"}]`)
+	if s := piPromptState(t, PromptChange{Name: "mcp"}); s.Status != "conflict" {
+		t.Fatalf("bundled extension omitted: %+v", s)
+	}
+	if read(t, log) == "" {
+		t.Fatal("empty user extensions skipped native enumeration")
+	}
+}
+
+func TestPromptTemplatePiProjectMCPRequiresTrust(t *testing.T) {
+	h, _ := promptPiFixture(t)
+	p := filepath.Join(h, "work")
+	write(t, filepath.Join(p, ".pi/mcp.json"), `{}`)
+	ok(t)(AddProject(p))
+	if s := piPromptState(t, PromptChange{Name: "d"}); s.Status != "unverified" || !strings.Contains(s.Reason, "trust") {
+		t.Fatalf("MCP-only project bypassed trust: %+v", s)
+	}
+}
+
+func TestPromptTemplatePiReadsInstalledBuiltinsAndRejectsUnknownDefinitions(t *testing.T) {
+	h, _ := promptPiFixture(t)
+	root := filepath.Join(h, ".pi/agent/install/releases/current/node_modules/@earendil-works/pi-coding-agent")
+	write(t, filepath.Join(h, ".pi/agent/install/current-version"), "current")
+	write(t, filepath.Join(root, "package.json"), `{"name":"@earendil-works/pi-coding-agent","bin":{"pi":"dist/cli.js"}}`)
+	write(t, filepath.Join(root, "dist/cli.js"), "// native entry")
+	write(t, filepath.Join(root, "dist/core/slash-commands.js"), `export const BUILTIN_SLASH_COMMANDS = [{ name: "native-future", description: "Native" }];`)
+	write(t, filepath.Join(root, "dist/modes/interactive/interactive-mode.js"), `class InteractiveMode { setupEditorSubmitHandler() { this.defaultEditor.onSubmit = async (text) => { text = text.trim(); if (text === "/hidden-future") { return; } await this.session.prompt(text); }; } }`)
+	for _, name := range []string{"native-future", "hidden-future"} {
+		if s := piPromptState(t, PromptChange{Name: name}); s.Status != "conflict" {
+			t.Fatalf("native builtin omitted: %+v", s)
+		}
+	}
+	write(t, filepath.Join(root, "dist/core/slash-commands.js"), `export const BUILTIN_SLASH_COMMANDS = discoverCommands();`)
+	if s := piPromptState(t, PromptChange{Name: "d"}); s.Status != "unverified" {
+		t.Fatalf("unrecognized native definitions treated as empty: %+v", s)
+	}
+}
+
+func TestPromptTemplatePiRejectsUnrecognizedDispatcherBranches(t *testing.T) {
+
+	h, _ := promptPiFixture(t)
+	root := filepath.Join(h, ".pi/agent/install/releases/current/node_modules/@earendil-works/pi-coding-agent")
+	for _, branch := range []string{
+		`if (/^\/hidden-future/.test(text)) { return; }`,
+		`if (text.match(/^\/hidden-future/)) { return; }`,
+		`if (text.includes("/hidden-future")) { return; }`,
+		`if (this.dispatchNativeCommand(text)) { return; }`,
+		`switch (text) { case "/hidden-future": return; }`,
+	} {
+		t.Run(branch, func(t *testing.T) {
+			write(t, filepath.Join(root, "dist/modes/interactive/interactive-mode.js"), `class InteractiveMode { setupEditorSubmitHandler() { this.defaultEditor.onSubmit = async (text) => { text = text.trim(); if (text === "/quit") { return; } `+branch+` await this.session.prompt(text); }; } }`)
+			if names, err := piInstalledBuiltins(root); err == nil {
+				t.Fatalf("unrecognized dispatch certified as complete: %v", names)
+			}
+		})
+	}
+}
+
+func promptCheckedPiFixture(t *testing.T) string {
+	t.Helper()
+	h, _ := promptPiFixture(t)
+	if s := piPromptState(t, PromptChange{Name: "fixture-probe"}); s.Status != "available" {
+		t.Fatal(s)
+	}
+	return h
+}
+
 func promptPiFixture(t *testing.T) (string, string) {
 	t.Helper()
 	h := sandbox(t)
@@ -150,6 +242,12 @@ func promptPiFixture(t *testing.T) (string, string) {
 	log := filepath.Join(h, "pi-runs")
 	t.Setenv("MAGPIE_FAKE_PI", log)
 	write(t, filepath.Join(h, ".pi/agent/extensions/observer.ts"), `export default pi => {}`)
+	root := filepath.Join(h, ".pi/agent/install/releases/current/node_modules/@earendil-works/pi-coding-agent")
+	write(t, filepath.Join(h, ".pi/agent/install/current-version"), "current")
+	write(t, filepath.Join(root, "package.json"), `{"name":"@earendil-works/pi-coding-agent","bin":{"pi":"dist/cli.js"}}`)
+	write(t, filepath.Join(root, "dist/cli.js"), "// native entry")
+	write(t, filepath.Join(root, "dist/core/slash-commands.js"), `export const BUILTIN_SLASH_COMMANDS = [{name:"thinking"},{name:"clone"},{name:"trust"},{name:"import"}];`)
+	write(t, filepath.Join(root, "dist/modes/interactive/interactive-mode.js"), `class InteractiveMode { setupEditorSubmitHandler() { this.defaultEditor.onSubmit = async (text) => { text = text.trim(); if (text === "/quit") { return; } await this.session.prompt(text); }; } }`)
 	return h, log
 }
 
@@ -423,7 +521,6 @@ func TestPromptTemplatePiRuntimeCancellationPrecedesProcessLaunch(t *testing.T) 
 	// A nonexistent binary makes attempting a launch observably different from
 	// respecting cancellation first, without relying on child scheduling.
 	for _, check := range []func() error{
-		func() error { _, err := piCommandVersion(ctx, "missing-pi-fixture", t.TempDir()); return err },
 		func() error {
 			_, err := readPiCommands(ctx, "missing-pi-fixture", t.TempDir(), t.TempDir())
 			return err

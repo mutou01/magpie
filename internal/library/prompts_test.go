@@ -18,14 +18,14 @@ func TestPromptTemplateTargetIcons(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, target := range v.Targets {
-		if target.ID == "codex-desktop" && target.Icon != "codex-color" {
-			t.Fatalf("Desktop must use the existing Codex icon, got %q", target.Icon)
+		if target.ID == "codex" && target.Icon != "codex-color" {
+			t.Fatalf("Codex must use the existing skill icon, got %q", target.Icon)
 		}
 	}
 }
 
 func TestPromptTemplateAgentUpdateProtectsLatestTemplateAndTargets(t *testing.T) {
-	h := sandbox(t)
+	h := promptCheckedPiFixture(t)
 	ok(t)(SavePrompt(PromptChange{Name: "audit-login", Text: "Original", Agents: []string{}}))
 	v, _ := ReadPrompts()
 	id := v.Items[0].ID
@@ -115,7 +115,7 @@ func TestPromptTemplateAgentUpdateDoesNotStartPiAndRetainsExpiredSelection(t *te
 }
 
 func TestPromptTemplateAgentUpdateKeepsBodyAndPartialDeploymentFailure(t *testing.T) {
-	h := sandbox(t)
+	h := promptCheckedPiFixture(t)
 	ok(t)(SavePrompt(PromptChange{Name: "audit-login", Text: "Body", Agents: []string{}}))
 	v, _ := ReadPrompts()
 	id := v.Items[0].ID
@@ -176,7 +176,7 @@ func TestPromptTemplatesAppearInLibrary(t *testing.T) {
 }
 
 func TestPromptTemplateDeploysAndDoesNotBecomeInstructions(t *testing.T) {
-	h := sandbox(t)
+	h := promptCheckedPiFixture(t)
 	ok(t)(SavePrompt(PromptChange{Name: "代码审查", Text: "检查边界条件。", Agents: []string{"claude", "pi"}}))
 	for _, rel := range []string{".claude/commands/代码审查.md", ".pi/agent/prompts/代码审查.md"} {
 		b, err := os.ReadFile(filepath.Join(h, rel))
@@ -193,7 +193,7 @@ func TestPromptTemplateDeploysAndDoesNotBecomeInstructions(t *testing.T) {
 }
 
 func TestPromptTemplateBuiltinAndSkillConflictsArePerTarget(t *testing.T) {
-	h := sandbox(t)
+	h := promptCheckedPiFixture(t)
 	res, err := SavePrompt(PromptChange{Name: "plan", Text: "Template", Agents: []string{"claude"}})
 	if err != nil {
 		t.Fatal(err)
@@ -250,10 +250,10 @@ func TestPromptTemplateNormalSyncAndMissingBody(t *testing.T) {
 }
 
 func TestPromptTemplateCodexDesktopIsExplicitAndNotAnImportableSkill(t *testing.T) {
-	sandbox(t)
-	was := promptDesktopInstalled
-	promptDesktopInstalled = func() bool { return true }
-	t.Cleanup(func() { promptDesktopInstalled = was })
+	promptCodexFixture(t)
+	if _, err := CheckPrompt(PromptChange{Name: "review-login"}); err != nil {
+		t.Fatal(err)
+	}
 	ok(t)(SavePrompt(PromptChange{Name: "review-login", Text: "Review this request.", Agents: []string{"codex-desktop"}}))
 	path := filepath.Join(codexDir(), "skills/review-login/SKILL.md")
 	if !strings.Contains(read(t, path), "Review this request.") {
@@ -297,7 +297,7 @@ func TestPromptTemplateBackupAndOldBundleCompatibility(t *testing.T) {
 }
 
 func TestPromptTemplateSetupRestoresSelection(t *testing.T) {
-	sandbox(t)
+	promptCheckedPiFixture(t)
 	ok(t)(SavePrompt(PromptChange{Name: "audit-code", Text: "Check.", Agents: []string{"pi"}}))
 	v, _ := ReadPrompts()
 	id := v.Items[0].ID
@@ -319,7 +319,7 @@ func TestPromptTemplateSetupRestoresSelection(t *testing.T) {
 // A snapshot keeps templates alongside develop's repaired instruction sets:
 // a legacy managed block is never captured as part of the user's set text.
 func TestPromptTemplateSnapshotKeepsCleanInstructions(t *testing.T) {
-	sandbox(t)
+	promptCheckedPiFixture(t)
 	shared := "Keep user rules."
 	ok(t)(SaveInstructions(InstructionsChange{Shared: &shared, Agents: []string{"claude"}}))
 	ok(t)(SavePrompt(PromptChange{Name: "audit-code", Text: "Review this request.", Agents: []string{"pi"}}))
@@ -385,7 +385,7 @@ func TestPromptTemplateNamesAndProjectConflicts(t *testing.T) {
 }
 
 func TestPromptTemplateNewConflictRetiresOnlyUneditedDeployment(t *testing.T) {
-	h := sandbox(t)
+	h := promptCheckedPiFixture(t)
 	ok(t)(SavePrompt(PromptChange{Name: "audit-login", Text: "original", Agents: []string{"claude", "pi"}}))
 	write(t, filepath.Join(h, ".claude/skills/audit-login/SKILL.md"), "---\nname: audit-login\ndescription: User skill\n---\nUser text")
 	res, err := Sync()
@@ -411,7 +411,7 @@ func TestPromptTemplateNewConflictRetiresOnlyUneditedDeployment(t *testing.T) {
 }
 
 func TestPromptTemplateDeletedFileIsNotShownEnabled(t *testing.T) {
-	h := sandbox(t)
+	h := promptCheckedPiFixture(t)
 	ok(t)(SavePrompt(PromptChange{Name: "audit-login", Text: "body", Agents: []string{"pi"}}))
 	if err := os.Remove(filepath.Join(h, ".pi/agent/prompts/audit-login.md")); err != nil {
 		t.Fatal(err)
@@ -464,7 +464,7 @@ func TestPromptTemplateAdaptersAreLimitedToInstalledHarnesses(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, target := range v.Targets {
-		if target.ID != "claude" && target.ID != "pi" && target.ID != "codex-desktop" {
+		if !slices.Contains([]string{"claude", "pi", "codex", "codex-desktop", "dsh"}, target.ID) {
 			t.Fatalf("uninstalled harness adapter exposed: %s", target.ID)
 		}
 	}
@@ -489,7 +489,7 @@ func TestPromptTemplateUnknownDynamicCommandsBlockOnlyThatTarget(t *testing.T) {
 }
 
 func TestPromptTemplateProtectsObservedBuiltinAliases(t *testing.T) {
-	sandbox(t)
+	promptCheckedPiFixture(t)
 	for _, c := range []struct{ agent, name string }{{"claude", "loop"}, {"claude", "proactive"}, {"claude", "insights"}, {"claude", "checkup"}, {"pi", "thinking"}, {"pi", "clone"}, {"pi", "trust"}, {"pi", "import"}} {
 		states, err := CheckPrompt(PromptChange{Name: c.name, Text: "body"})
 		if err != nil {
@@ -528,8 +528,11 @@ func TestPromptTemplateProtectsSkillFolderAlias(t *testing.T) {
 }
 
 func TestPromptTemplatePiUsesActualSkillNamespaceAndExplicitPromptFiles(t *testing.T) {
-	h := sandbox(t)
+	h, _ := promptPiFixture(t)
 	write(t, filepath.Join(h, ".pi/agent/skills/audit-login/SKILL.md"), "---\nname: audit-login\ndescription: User skill\n---\nInstructions")
+	if s := piPromptState(t, PromptChange{Name: "audit-login"}); s.Status != "available" {
+		t.Fatal(s)
+	}
 	ok(t)(SavePrompt(PromptChange{Name: "audit-login", Text: "Template", Agents: []string{"pi"}}))
 	custom := filepath.Join(h, "custom-prompts", "audit-custom.md")
 	write(t, custom, "User prompt")
@@ -545,10 +548,10 @@ func TestPromptTemplatePiUsesActualSkillNamespaceAndExplicitPromptFiles(t *testi
 }
 
 func TestPromptTemplateSyncBacksUpEveryDesktopSkill(t *testing.T) {
-	sandbox(t)
-	was := promptDesktopInstalled
-	promptDesktopInstalled = func() bool { return true }
-	t.Cleanup(func() { promptDesktopInstalled = was })
+	promptCodexFixture(t)
+	if _, err := CheckPrompt(PromptChange{Name: "audit-one"}); err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range []string{"audit-one", "audit-two", "audit-three"} {
 		ok(t)(SavePrompt(PromptChange{Name: name, Text: "original " + name, Agents: []string{"codex-desktop"}}))
 	}
@@ -592,7 +595,7 @@ func TestPromptTemplateSyncBacksUpEveryDesktopSkill(t *testing.T) {
 }
 
 func TestPromptTemplateCaseOnlyRenameKeepsTheNewCommand(t *testing.T) {
-	h := sandbox(t)
+	h := promptCheckedPiFixture(t)
 	ok(t)(SavePrompt(PromptChange{Name: "AuditLogin", Text: "Template", Agents: []string{"pi"}}))
 	v, _ := ReadPrompts()
 	ok(t)(SavePrompt(PromptChange{ID: v.Items[0].ID, Name: "auditlogin", Text: "Template", Agents: []string{"pi"}}))
@@ -625,10 +628,10 @@ func TestPromptTemplateInvalidUTF8BodyIsNotDeployedOrCarried(t *testing.T) {
 }
 
 func TestPromptTemplateRemovalReleasesEditedDesktopSkill(t *testing.T) {
-	sandbox(t)
-	was := promptDesktopInstalled
-	promptDesktopInstalled = func() bool { return true }
-	t.Cleanup(func() { promptDesktopInstalled = was })
+	promptCodexFixture(t)
+	if _, err := CheckPrompt(PromptChange{Name: "audit-login"}); err != nil {
+		t.Fatal(err)
+	}
 	ok(t)(SavePrompt(PromptChange{Name: "audit-login", Text: "Original", Agents: []string{"codex-desktop"}}))
 	v, _ := ReadPrompts()
 	path := filepath.Join(codexDir(), "skills/audit-login/SKILL.md")

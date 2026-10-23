@@ -79,7 +79,14 @@ func (l *Library) syncPrompts(b *backups, res *Result) {
 					res.fail(t.ID, "prompt:"+p.Name, fmt.Errorf("user-owned or externally edited file: %s", path))
 					continue
 				}
-				if err == nil && old.Files[path] != "" && promptHash(cur) == promptHash(data) {
+				caseRename := false
+				if runtime.GOOS == "windows" {
+					for alias := range old.Files {
+						caseRename = caseRename || (alias != path && strings.EqualFold(alias, path) && filepath.Base(alias) != filepath.Base(path) && promptSamePath(alias, path))
+					}
+				}
+				if err == nil && ownedHash != "" && promptHash(cur) == promptHash(data) && !caseRename {
+					old.Files[path] = promptHash(data)
 					continue
 				}
 				if err := b.keep(t.ID+"-"+p.ID, path); err != nil {
@@ -121,6 +128,13 @@ func (l *Library) syncPrompts(b *backups, res *Result) {
 				continue
 			}
 			var desired map[string][]byte
+			if p := l.prompt(pid); p != nil && (id == "codex" || id == "codex-desktop") && (slices.Contains(p.Agents, "codex") || slices.Contains(p.Agents, "codex-desktop")) {
+				// Without the body we cannot prove which shared files are still
+				// needed. Keep the existing ownership, not just the file itself.
+				if _, err := os.ReadFile(promptPath(pid)); err != nil {
+					continue
+				}
+			}
 			if p := l.prompt(pid); p != nil && slices.Contains(p.Agents, id) {
 				// An unknown source or unsupported target never means remove.
 				body, err := os.ReadFile(promptPath(pid))
@@ -144,6 +158,10 @@ func (l *Library) syncPrompts(b *backups, res *Result) {
 			}
 			for path, hash := range old.Files {
 				if slices.ContainsFunc(slices.Collect(maps.Keys(desired)), func(want string) bool { return promptSamePath(path, want) }) {
+					continue
+				}
+				if l.promptSharedPathNeeded(all, id, pid, path, hash) {
+					delete(old.Files, path)
 					continue
 				}
 				cur, err := os.ReadFile(path)
@@ -176,6 +194,64 @@ func (l *Library) syncPrompts(b *backups, res *Result) {
 			}
 		}
 	}
+}
+
+// A shared deployment is retired only after its last selected consumer stops
+// needing that physical file. This also understands legacy Desktop records.
+func (l *Library) promptSharedPathNeeded(all []PromptTarget, id, pid, path, hash string) bool {
+	if id != "codex" && id != "codex-desktop" {
+		return false
+	}
+	p := l.prompt(pid)
+	if p == nil {
+		return false
+	}
+	body, err := os.ReadFile(promptPath(pid))
+	if err != nil {
+		return true
+	}
+	for _, other := range []string{"codex", "codex-desktop"} {
+		if other == id || !slices.Contains(p.Agents, other) {
+			continue
+		}
+		t, ok := promptTargetByID(all, other)
+		if !ok {
+			continue
+		}
+		files, _ := t.files(p, string(body))
+		for want := range files {
+			if promptSamePath(path, want) {
+				// Transfer legacy ownership even if the remaining consumer's
+				// capability check is pending. This records the existing file,
+				// not a successful new deployment, and preserves edit protection.
+				a := l.applied(other)
+				if a.Prompts == nil {
+					a.Prompts = map[string]*AppliedPrompt{}
+				}
+				if a.Prompts[pid] == nil {
+					a.Prompts[pid] = &AppliedPrompt{Files: map[string]string{}}
+				}
+				if a.Prompts[pid].Files == nil {
+					a.Prompts[pid].Files = map[string]string{}
+				}
+				if a.Prompts[pid].Files[want] == "" {
+					a.Prompts[pid].Files[want] = hash
+				}
+				return true
+			}
+		}
+		if a := l.Applied[other]; a != nil && a.Prompts[pid] != nil {
+			state := l.promptState(t, p, string(body))
+			if state.Status == "unverified" || state.Status == "edited" {
+				for owned := range a.Prompts[pid].Files {
+					if promptSamePath(path, owned) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
 }
 
 // Link a flushed staging file into a new name without replacing a file created

@@ -1261,8 +1261,8 @@ magpie.plugin("library", (ctx) => {
       c.setAttribute("aria-label", a.name);
       if (!can(a) && selected.includes(a.id)) c.title += "\n" + t("{agent} has it — click to take it away", { agent: a.name });
       if (a.verification === "pending") c.title += "\n" + t("Native behavior awaits verification on this installation");
-      if (a.shared) c.title += "\n" + t("Shares skill files with Codex CLI");
-      if (a.reload) c.title += "\n" + t(a.reload);
+      if (a.invocation) c.title += "\n" + a.invocation;
+      if (a.reload && state(a)?.status === "enabled") c.title += "\n" + t(a.reload);
     }
     return box;
   }
@@ -1340,7 +1340,7 @@ magpie.plugin("library", (ctx) => {
       try { const v = await api("library/prompts"); if (taken !== at) return; lib.prompts = v; render(); } catch (e) { status(e.message, "err"); } finally { refresh.disabled = false; }
     });
     head.append(glyph(GLYPH.doc), el("b", "", t("Prompt templates")), el("span", "grow"), refresh, button("+ " + t("New template"), "action lib-prompt-add", () => editPrompt()));
-    card.append(head, el("p", "lib-aside", t("Type /name in a supported harness to use a template with your request.")));
+    card.append(head, el("p", "lib-aside", t("Use the native invocation shown for each harness to apply a template with your request.")));
     const search = input(promptSearch, t("Search templates"));
     search.className = "lib-prompt-search";
     search.setAttribute("aria-label", t("Search templates"));
@@ -1445,22 +1445,25 @@ magpie.plugin("library", (ctx) => {
         const row = el("div", "lib-prompt-target"); row.dataset.agent = a.id;
         const label = el("label", "lib-prompt-target-label");
         const pick = el("input"); pick.type = "checkbox";
-        const retained = s?.status === "unverified" && p?.agents.includes(a.id);
+        const retained = d.agents.includes(a.id) && p?.agents.includes(a.id);
         pick.checked = d.agents.includes(a.id) && (!blocked || retained);
         pick.disabled = !!blocked && !retained;
-        pick.onchange = () => { d.agents = pick.checked ? [...new Set([...d.agents, a.id])] : d.agents.filter(id => id !== a.id); };
+        pick.onchange = () => {
+          d.agents = pick.checked ? [...new Set([...d.agents, a.id])] : d.agents.filter(id => id !== a.id);
+          pick.disabled = !!blocked && !pick.checked;
+        };
         label.append(pick, el("span", "", a.name), el("span", "grow"), el("span", "note", s ? promptLabel(s) : t("Check availability")));
         row.append(label);
         if (s?.reason || s?.source) row.append(el("div", "note lib-prompt-reason", [s.reason ? t(s.reason) : "", s.source].filter(Boolean).join(" · ")));
-        if (a.shared) row.append(el("div", "note", t("Shares skill files with Codex CLI")));
+        if (a.invocation) row.append(el("div", "note lib-prompt-invocation", a.invocation));
         if (a.verification === "pending") row.append(el("div", "note", t("Native behavior awaits verification on this installation")));
-        if (a.reload) row.append(el("div", "note", t(a.reload)));
+        if (a.reload && s?.status === "enabled") row.append(el("div", "note", t(a.reload)));
         checks.append(row);
       }
     }
     const checkButton = button(t("Check availability"), "action lib-prompt-check", () => check());
     const availability = el("div", "lib-prompt-availability");
-    if (targets.some(a => a.id === "pi" && a.detected)) availability.append(el("p", "lib-aside lib-prompt-runtime-note", t("Checking Pi starts it and loads extensions; startup code may run. Saving and syncing do not start Pi.")));
+    if (targets.some(a => ["pi", "codex", "dsh"].includes(a.id) && a.detected)) availability.append(el("p", "lib-aside lib-prompt-runtime-note", t("Checking availability starts installed harnesses and loads extensions or plugins, which may cause external side effects. This is not a sandbox. Saving and syncing do not start checks.")));
     availability.append(checks, el("p", "lib-aside", t("Checks built-in commands, global configuration and projects registered in the Library.")));
     ed.append(checkButton, availability);
     ed.append(error);
@@ -1470,8 +1473,8 @@ magpie.plugin("library", (ctx) => {
       const answer = await api("library/prompts/check", { id: d.id, name: d.name.trim(), text: d.text, passive: !fresh });
       if (JSON.stringify([d.name, d.text]) !== key || modal?.editor !== ed || confirmationPending) return false;
       states = answer; checked = key;
-      // An unknown check must not turn an existing selection into a removal.
-      d.agents = d.agents.filter(id => states.some(s => s.agent === id && (["available", "enabled"].includes(s.status) || (s.status === "unverified" && p?.agents.includes(id)))));
+      // A failed check must not turn an existing selection into a removal.
+      d.agents = d.agents.filter(id => p?.agents.includes(id) || states.some(s => s.agent === id && ["available", "enabled"].includes(s.status)));
       drawTargets(); return true;
     }
     async function save() {
