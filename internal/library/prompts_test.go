@@ -177,8 +177,8 @@ func TestPromptTemplatesAppearInLibrary(t *testing.T) {
 
 func TestPromptTemplateDeploysAndDoesNotBecomeInstructions(t *testing.T) {
 	h := promptCheckedPiFixture(t)
-	ok(t)(SavePrompt(PromptChange{Name: "代码审查", Text: "检查边界条件。", Agents: []string{"claude", "pi"}}))
-	for _, rel := range []string{".claude/commands/代码审查.md", ".pi/agent/prompts/代码审查.md"} {
+	ok(t)(SavePrompt(PromptChange{Name: "review-code", Text: "检查边界条件。", Agents: []string{"claude", "pi"}}))
+	for _, rel := range []string{".claude/commands/review-code.md", ".pi/agent/prompts/review-code.md"} {
 		b, err := os.ReadFile(filepath.Join(h, rel))
 		if err != nil {
 			t.Fatalf("template not deployed to %s: %v", rel, err)
@@ -222,7 +222,7 @@ func TestPromptTemplateBuiltinAndSkillConflictsArePerTarget(t *testing.T) {
 
 func TestPromptTemplateNormalSyncAndMissingBody(t *testing.T) {
 	h := sandbox(t)
-	ok(t)(SavePrompt(PromptChange{Name: "审查", Text: "first", Agents: []string{"claude"}}))
+	ok(t)(SavePrompt(PromptChange{Name: "review-code", Text: "first", Agents: []string{"claude"}}))
 	v, err := ReadPrompts()
 	if err != nil {
 		t.Fatal(err)
@@ -230,7 +230,7 @@ func TestPromptTemplateNormalSyncAndMissingBody(t *testing.T) {
 	id := v.Items[0].ID
 	write(t, promptPath(id), "second")
 	ok(t)(Sync())
-	path := filepath.Join(h, ".claude/commands/审查.md")
+	path := filepath.Join(h, ".claude/commands/review-code.md")
 	if !strings.Contains(read(t, path), "second") {
 		t.Fatal("normal sync did not update template")
 	}
@@ -275,14 +275,14 @@ func TestPromptTemplateCodexDesktopIsExplicitAndNotAnImportableSkill(t *testing.
 
 func TestPromptTemplateBackupAndOldBundleCompatibility(t *testing.T) {
 	sandbox(t)
-	ok(t)(SavePrompt(PromptChange{Name: "审查", Text: "original", Agents: []string{}}))
+	ok(t)(SavePrompt(PromptChange{Name: "review", Text: "original", Agents: []string{}}))
 	v, _ := ReadPrompts()
 	id := v.Items[0].ID
 	b, err := Collect()
 	if err != nil {
 		t.Fatal(err)
 	}
-	ok(t)(SavePrompt(PromptChange{ID: id, Name: "审查", Text: "changed", Agents: []string{}}))
+	ok(t)(SavePrompt(PromptChange{ID: id, Name: "review", Text: "changed", Agents: []string{}}))
 	ok(t)(Put(b))
 	v, _ = ReadPrompts()
 	if len(v.Items) != 1 || v.Items[0].Text != "original" {
@@ -357,14 +357,17 @@ func TestPromptTemplateSnapshotKeepsCleanInstructions(t *testing.T) {
 
 func TestPromptTemplateNamesAndProjectConflicts(t *testing.T) {
 	h := sandbox(t)
-	for _, name := range []string{"", "a/b", "a b", "a\u200bb", "../a", strings.Repeat("审", 61)} {
+	for _, name := range []string{"", "a/b", "a b", "a\u200bb", "../a", "审查", "Review", "with_underscore", "-review", "review-", "review--code", "Ｒｅｖｉｅｗ", strings.Repeat("a", 61)} {
 		if _, err := SavePrompt(PromptChange{Name: name, Text: "body", Agents: []string{}}); err == nil {
 			t.Fatalf("accepted invalid name %q", name)
 		}
 	}
-	ok(t)(SavePrompt(PromptChange{Name: "Ｒｅｖｉｅｗ", Text: "body", Agents: []string{}}))
+	ok(t)(SavePrompt(PromptChange{Name: "review", Text: "body", Agents: []string{}}))
 	if _, err := SavePrompt(PromptChange{Name: "review", Text: "body", Agents: []string{}}); err == nil {
-		t.Fatal("accepted NFKC-equivalent name")
+		t.Fatal("accepted duplicate name")
+	}
+	for _, name := range []string{"a", "0", "a-1-code", strings.Repeat("a", 60)} {
+		ok(t)(SavePrompt(PromptChange{Name: name, Text: "body", Agents: []string{}}))
 	}
 	project := filepath.Join(h, "work")
 	if err := os.MkdirAll(project, 0o755); err != nil {
@@ -381,6 +384,66 @@ func TestPromptTemplateNamesAndProjectConflicts(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(h, ".claude/commands/audit-login.md")); !os.IsNotExist(err) {
 		t.Fatal("project conflict deployed globally")
+	}
+}
+
+func TestPromptTemplateLegacyNamesStayReadableButCannotRedeploy(t *testing.T) {
+	for _, name := range []string{"审查", "Upper_Name"} {
+		t.Run(name, func(t *testing.T) {
+			h := sandbox(t)
+			// A literal old index and deployment: no new-name validator is used
+			// to prepare the very legacy data this public API must preserve.
+			command := filepath.Join(h, ".claude/commands", name+".md")
+			body := "Original command bytes"
+			write(t, path(), "{}")
+			write(t, command, body)
+			store := promptStore{Version: 1, Prompts: []*Prompt{{ID: "legacy", Name: name, Agents: []string{"claude"}}}, Applied: map[string]map[string]*AppliedPrompt{"claude": {"legacy": {Files: map[string]string{command: promptHash([]byte(body))}}}}}
+			b, _ := json.Marshal(store)
+			write(t, promptStorePath(), string(b))
+			write(t, promptPath("legacy"), "Original body")
+			v, err := ReadPrompts()
+			if err != nil || len(v.Items) != 1 || v.Items[0].Name != name {
+				t.Fatalf("old index unreadable: %+v %v", v, err)
+			}
+			bundle, err := Collect()
+			if err != nil || bundle == nil || bundle.Prompts == nil || len(*bundle.Prompts) != 1 || (*bundle.Prompts)[0].Name != name {
+				t.Fatalf("old template cannot be exported: %v", err)
+			}
+			if _, err := SavePrompt(PromptChange{ID: "legacy", Name: name, Text: "Edited body", Agents: []string{"claude"}}); err == nil {
+				t.Fatal("legacy name edited without rename")
+			}
+			res, err := Sync()
+			if err != nil || len(res.Problems) == 0 || read(t, command) != body {
+				t.Fatalf("sync rewrote an incompatible deployment: %+v %v", res, err)
+			}
+			ok(t)(SetPromptAgents("legacy", []string{}))
+			if _, err := os.Stat(command); !os.IsNotExist(err) {
+				t.Fatal("cannot disable legacy deployment", err)
+			}
+			res, err = SetPromptAgents("legacy", []string{"claude"})
+			if err != nil || len(res.Problems) == 0 {
+				t.Fatalf("old name redeployed: %+v %v", res, err)
+			}
+			if _, err := os.Stat(command); !os.IsNotExist(err) {
+				t.Fatal("blocked legacy template created a file", err)
+			}
+			res, err = Put(bundle)
+			if err != nil || len(res.Problems) == 0 {
+				t.Fatalf("legacy import did not report rename requirement: %+v %v", res, err)
+			}
+			if read(t, command) != "" {
+				t.Fatal("import silently redeployed legacy name")
+			}
+			ok(t)(SavePrompt(PromptChange{ID: "legacy", Name: "legacy-review", Text: "Original body", Agents: []string{"claude"}}))
+			if !strings.Contains(read(t, filepath.Join(h, ".claude/commands/legacy-review.md")), "Original body") {
+				t.Fatal("explicit rename did not deploy")
+			}
+			ok(t)(RemovePrompt("legacy"))
+			v, err = ReadPrompts()
+			if err != nil || len(v.Items) != 0 {
+				t.Fatalf("cannot delete renamed legacy template: %+v %v", v, err)
+			}
+		})
 	}
 }
 
@@ -596,7 +659,13 @@ func TestPromptTemplateSyncBacksUpEveryDesktopSkill(t *testing.T) {
 
 func TestPromptTemplateCaseOnlyRenameKeepsTheNewCommand(t *testing.T) {
 	h := promptCheckedPiFixture(t)
-	ok(t)(SavePrompt(PromptChange{Name: "AuditLogin", Text: "Template", Agents: []string{"pi"}}))
+	// Seed a deployment written by an older version, then rename publicly.
+	command := filepath.Join(h, ".pi/agent/prompts/AuditLogin.md")
+	write(t, command, "Legacy body")
+	store := promptStore{Version: 1, Prompts: []*Prompt{{ID: "legacy", Name: "AuditLogin", Agents: []string{"pi"}}}, Applied: map[string]map[string]*AppliedPrompt{"pi": {"legacy": {Files: map[string]string{command: promptHash([]byte("Legacy body"))}}}}}
+	b, _ := json.Marshal(store)
+	write(t, promptStorePath(), string(b))
+	write(t, promptPath("legacy"), "Template")
 	v, _ := ReadPrompts()
 	ok(t)(SavePrompt(PromptChange{ID: v.Items[0].ID, Name: "auditlogin", Text: "Template", Agents: []string{"pi"}}))
 	es, err := os.ReadDir(filepath.Join(h, ".pi/agent/prompts"))

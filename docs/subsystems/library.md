@@ -63,9 +63,12 @@ Missing indexes are not reconstructed automatically from orphan Markdown or
 matching commands: names, target choices and ownership must be established from
 independent evidence before recovery. Keep the original files aside first.
 Portable bundles still carry only template ids, names, choices and text, never
-the local index's deployment paths/hashes. Names allow
-letters (including Chinese), numbers, `-` and `_`, at most 60 characters.
-NFKC and case-insensitive comparison prevents equivalent library names.
+the local index's deployment paths/hashes. New names are 1–60 ASCII characters
+matching `^[a-z0-9]+(?:-[a-z0-9]+)*$`, the common directly invocable namespace.
+Legacy names remain readable, portable, removable and disableable; editing or
+deploying them requires an explicit rename. Stored-data validation retains the
+legacy grammar so one old name cannot make the entire Library unreadable.
+NFKC and case-insensitive comparison prevents equivalent stored names.
 
 [`prompt_targets.go`](../../internal/library/prompt_targets.go) writes Claude
 commands and Pi prompts as Markdown with `$ARGUMENTS`, invoked as `/name`.
@@ -112,8 +115,9 @@ are never treated as empty text.
 Only explicit **Check availability** may start verification processes. Opening,
 refreshing, passive check (`passive: true`), saving, target toggles and sync never
 start a Harness. Checks run outside the Library lock, with cancellation, bounded
-output, Windows `proc.Tree` cleanup and a 30-second external-probe budget per
-context (Codex/DSH share a bounded probe across their context list). No check
+output and Windows `proc.Tree` cleanup. Pi has a 30-second external-probe budget
+per context; Codex shares 30 seconds across its context list, while DSH shares
+90 seconds for two enumerations and their source fingerprint. No check
 submits a prompt, creates an agent task or answers an authorization request.
 Extension/plugin startup can still execute code and cause external side effects;
 the warning beside the button explicitly states this is not a sandbox.
@@ -140,26 +144,69 @@ errors, disabled generated skills and malformed output block deployment. Returne
 skill locations are discovered, fingerprinted, then enumerated again to avoid
 trusting an inventory whose resources changed during discovery. A CLI result
 never certifies Desktop interaction or implicit-invocation policy acceptance.
+Responses, notifications and server requests are distinguished by their native
+envelopes. A schema-checked `remoteControl/status/changed` notification without
+an id may pass; requests, unknown messages and `skills/changed` invalidate the
+check. Loading warnings remain blocking unless independent evidence establishes
+their effect on naming, loading and explicit-only policy. They are not silently
+discarded because a skills list arrived afterwards. A native `configWarning`
+notification reports a configuration-warning block without exposing its summary,
+details or paths; it does not count as an available inventory.
 
 [`prompt_dsh.go`](../../internal/library/prompt_dsh.go) runs the original DeepSeek
 Harness through a separate native client in a physical temporary profile/storage
 copy. Only executable dependency directories are linked. Original config/state
 are not linked or rewritten; legacy settings imports, executable YAML and
-unmappable resource/storage overrides stop before startup. The client queries
-native plugin/preset inventories and temporary sessions' commands/skills, without
-injecting a check plugin or sending a prompt. Current native `skills/list` drops
-the provider completeness flag and effective provider/resource mapping. Therefore
-a successful list, clean logs or active plugins cannot certify completeness;
-these configurations remain unverified with the uncovered providers explained.
-The adapter deliberately does not enable DSH by assuming completeness. Future
-support requires independent complete-source evidence, not a version/hash gate
-or a relaxed check.
+unmappable resource/storage overrides stop before startup. The home `.env` is
+copied as a private physical file, then the original `loadLayeredEnv` supplies
+process > project > home precedence and native bootstrap-variable restrictions.
+Each invoking context boots in its own process so one project's environment
+cannot become inherited process state for another; when home is the invoking
+directory it remains one native project layer. Rejected bootstrap variables name
+only the original file and variable, never its value. The separate client calls the installation's exported
+`runProfile`, preserves the composed profile entries and every preset, and maps
+filesystem skill roots back to the original read-only resources. It queries
+`skills.snapshot` and loads each definition in acquired preset and temporary
+Agent scopes; commands come from the original registry for the actual Agent.
+No Agent input or model request is submitted by this check.
+
+Because the remote skill list drops completeness, the client verifies the
+original registry/provider classes through read-only structural capabilities.
+Missing layouts, runtime registrations, unknown providers, incomplete snapshots
+or inactive/unresolved plugin graphs remain unverified.
+For a native module-resolution failure, the reason can name the failed plugin
+and missing dependency, after validating package-name syntax; raw startup logs
+are never forwarded. Filesystem providers
+must retain the original class and discovery methods; subclasses or per-instance
+method replacements cannot certify completeness. They contribute every native
+root, including empty/missing roots. The Windows ACL
+provider's temporary resources must equal the installed assets; evidence uses
+the stable installed paths, never random derived paths. The loaded ACL body and
+invocation metadata must also agree with the original packaged skill, including
+when another plugin claims the ACL provider name. Active plugin/preset
+implementations and their declared runtime dependency resources join the content
+fingerprint, including wildcard publications and dependency resolution aliases.
+Retargeting an alias invalidates evidence even when the old physical resources
+and manifest bytes remain unchanged. Graph and registry revision must remain
+stable across each query.
+Two native enumerations must agree around the full source fingerprint, under a
+90-second probe budget. The final fingerprint must still match. Capability
+layout changes therefore block rather than falling back to a fixed command list.
+
+The Windows acceptance procedure and its practical limits are recorded in
+[harness prompt verification](../harness-prompt-verification.md).
 
 Inventories are complete-list, process-local caches, independent of the template
 name and excluded from backups/config sync. Their keys include effective launch
 and config paths, project contexts, environment and resource content fingerprints.
 Managed, unedited template artifacts are excluded from stamps and protected by
 ownership hashes. Resource changes/read failures invalidate evidence. Fingerprints
+follow Windows junctions and symlinks with fresh component resolution and include
+their targets, so a byte-identical retarget still invalidates evidence. Broken
+required links and cycles block; absent optional dependency-resolution candidates
+retain their link identity without pretending to supply a module. A scan is
+bounded to 50,000 entries and 1 GiB of file contents, including bundled browser
+resources and the native executable. Fingerprints
 cannot cover arbitrary external inputs used by extension code. Manual checks
 always discard prior evidence; only the newest concurrent check may publish.
 Pre/post-source mismatch discards the answer. Passive save/sync recheck sources

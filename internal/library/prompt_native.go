@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -65,14 +66,14 @@ func (l *Library) nativePromptSnapshot(t PromptTarget, extra []string) (nativePr
 		}
 	}
 	if t.ID == "dsh" {
-		s.roots = append(s.roots, filepath.Join(t.dir, "profiles/web/package.json"), filepath.Join(t.dir, "profiles/web/cordis.patch.yml"), filepath.Join(t.dir, "cordis.patch.yml"), filepath.Join(t.dir, "settings.yaml"), filepath.Dir(s.bin))
+		s.roots = append(s.roots, filepath.Join(t.dir, "profiles/web/package.json"), filepath.Join(t.dir, "profiles/web/cordis.patch.yml"), filepath.Join(t.dir, "cordis.patch.yml"), filepath.Join(t.dir, "settings.yaml"), filepath.Join(t.dir, ".env"), filepath.Dir(s.bin))
 	}
 	dirs := []string{home()}
 	for _, p := range l.Projects {
 		dirs = append(dirs, p.Dir)
 	}
 	for _, dir := range dirs {
-		real, err := filepath.EvalSymlinks(dir)
+		real, err := promptSourcePath(dir, nil, 0)
 		if err != nil {
 			return s, err
 		}
@@ -83,11 +84,58 @@ func (l *Library) nativePromptSnapshot(t PromptTarget, extra []string) (nativePr
 			s.roots = append(s.roots, filepath.Join(ancestor, ".agents", "skills"), filepath.Join(ancestor, ".codex", "config.toml"))
 		}
 		s.roots = append(s.roots, filepath.Join(real, ".dsh", "skills"), filepath.Join(real, ".dsh", "cordis.patch.yml"))
+		if t.ID == "dsh" {
+			s.roots = append(s.roots, filepath.Join(real, ".env"))
+		}
 	}
 	slices.Sort(s.dirs)
 	key, err := l.promptResourceKey(t, s.bin, s.dirs, s.roots)
 	s.key = key
 	return s, err
+}
+
+// Resolve every component freshly. Go's EvalSymlinks does not follow Windows
+// mount-point junctions, and the Library's page memo cannot certify new evidence.
+func promptSourcePath(path string, link func(string, string), depth int) (string, error) {
+	if depth > 40 {
+		return "", fmt.Errorf("command source link cycle: %s", path)
+	}
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	vol := filepath.VolumeName(path)
+	cur := vol + string(filepath.Separator)
+	parts := strings.FieldsFunc(path[len(vol):], func(r rune) bool { return r < 128 && os.IsPathSeparator(uint8(r)) })
+	for i, part := range parts {
+		next := filepath.Join(cur, part)
+		fi, err := os.Lstat(next)
+		if err != nil {
+			return "", err
+		}
+		if linkEntry(fi) {
+			to, err := os.Readlink(next)
+			if err != nil {
+				return "", err
+			} // Unknown reparse points remain blocked.
+			if !filepath.IsAbs(to) {
+				to = filepath.Join(filepath.Dir(next), to)
+			}
+			to = filepath.Clean(to)
+			if link != nil {
+				link(next, to)
+			}
+			real, err := promptSourcePath(to, link, depth+1)
+			if err != nil {
+				// A missing optional resource differs from a broken installed
+				// link. Do not let callers omit the latter as os.IsNotExist.
+				return "", fmt.Errorf("unreadable command source link %s: %w", next, err)
+			}
+			return promptSourcePath(filepath.Join(append([]string{real}, parts[i+1:]...)...), link, depth+1)
+		}
+		cur = next
+	}
+	return cur, nil
 }
 
 // Hash bytes, not merely mtime: replacing a same-sized source while preserving
@@ -99,52 +147,74 @@ func (l *Library) promptResourceKey(t PromptTarget, bin string, dirs, roots []st
 	slices.Sort(env)
 	fmt.Fprintln(h, strings.Join(env, "\x00"))
 	seen := map[string]bool{}
+	active := map[string]bool{}
+	recordLink := func(path, target string) { fmt.Fprintf(h, "link:%s:%s\n", path, target) }
 	total := int64(0)
-	var walk func(string) error
-	walk = func(path string) error {
+	type ownedFile struct{ path, hash string }
+	ownedByName := map[string][]ownedFile{}
+	for _, applied := range l.Applied {
+		for _, prompt := range applied.Prompts {
+			if prompt != nil {
+				for path, hash := range prompt.Files {
+					name := strings.ToLower(filepath.Base(path))
+					ownedByName[name] = append(ownedByName[name], ownedFile{path, hash})
+				}
+			}
+		}
+	}
+	type sourceFile struct {
+		path string
+		mode os.FileMode
+		size int64
+		sum  []byte
+		err  error
+	}
+	var files []sourceFile
+	var walk func(string, os.FileInfo) error
+	walk = func(path string, fi os.FileInfo) error {
 		path = filepath.Clean(path)
+		if active[path] {
+			return fmt.Errorf("command source directory cycle: %s", path)
+		}
 		if seen[path] {
 			return nil
 		}
 		seen[path] = true
+		active[path] = true
+		defer delete(active, path)
 		if len(seen) > 50000 {
 			return fmt.Errorf("command source scan exceeds 50000 entries")
 		}
-		for _, a := range l.Applied {
-			for _, p := range a.Prompts {
-				if p == nil {
-					continue
+		for _, owned := range ownedByName[strings.ToLower(filepath.Base(path))] {
+			if promptSamePath(path, owned.path) {
+				b, err := os.ReadFile(path)
+				if os.IsNotExist(err) {
+					return nil
 				}
-				for owned, hash := range p.Files {
-					if promptSamePath(path, owned) {
-						b, err := os.ReadFile(path)
-						if os.IsNotExist(err) {
-							return nil
-						}
-						if err != nil {
-							return err
-						}
-						if promptHash(b) == hash {
-							return nil
-						}
-					}
+				if err != nil {
+					return err
+				}
+				if promptHash(b) == owned.hash {
+					return nil
 				}
 			}
 		}
-		fi, err := os.Lstat(path)
-		if os.IsNotExist(err) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if fi.Mode()&os.ModeSymlink != 0 {
-			real, err := filepath.EvalSymlinks(path)
+		if fi == nil {
+			var err error
+			fi, err = os.Lstat(path)
+			if os.IsNotExist(err) {
+				return nil
+			}
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(h, "link:%s:%s\n", path, real)
-			return walk(real)
+		}
+		if linkEntry(fi) {
+			real, err := promptSourcePath(path, recordLink, 0)
+			if err != nil {
+				return err
+			}
+			return walk(real, nil)
 		}
 		if fi.IsDir() {
 			entries, err := os.ReadDir(path)
@@ -155,7 +225,11 @@ func (l *Library) promptResourceKey(t PromptTarget, bin string, dirs, roots []st
 				if e.Name() == ".git" {
 					continue
 				}
-				if err := walk(filepath.Join(path, e.Name())); err != nil {
+				info, err := e.Info()
+				if err != nil {
+					return err
+				}
+				if err := walk(filepath.Join(path, e.Name()), info); err != nil {
 					return err
 				}
 			}
@@ -165,24 +239,70 @@ func (l *Library) promptResourceKey(t PromptTarget, bin string, dirs, roots []st
 			return fmt.Errorf("non-file command source: %s", path)
 		}
 		total += fi.Size()
-		if total > 512<<20 {
-			return fmt.Errorf("command sources exceed 512 MiB")
+		// A bundled browser plugin alone can exceed 512 MiB. Keep full-byte
+		// evidence, with a bounded budget covering it and the native executable.
+		if total > 1<<30 {
+			return fmt.Errorf("command sources exceed 1 GiB")
 		}
-		f, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		fmt.Fprintf(h, "%s\x00%d\x00%d\n", path, fi.Mode(), fi.Size())
-		_, err = io.Copy(h, io.LimitReader(f, fi.Size()+1))
-		return err
+		files = append(files, sourceFile{path: path, mode: fi.Mode(), size: fi.Size()})
+		return nil
 	}
 	roots = slices.Clone(roots)
 	slices.Sort(roots)
 	for _, root := range roots {
-		if err := walk(root); err != nil {
+		real, err := promptSourcePath(root, recordLink, 0)
+		// Native package resolution records absent shadowing manifests too.
+		// A broken candidate is still absent; its link chain above has already
+		// entered the stamp. Required modules are checked by the native graph.
+		if os.IsNotExist(err) || filepath.Base(root) == "package.json" && errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
 			return "", err
 		}
+		info, err := os.Lstat(real)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if err := walk(real, info); err != nil {
+			return "", err
+		}
+	}
+	// Independent file reads can proceed together. In particular, Windows
+	// installations contain many small native modules; serial opens can make
+	// a content-based check exceed its probe budget. Keep ordering in the key.
+	jobs := make(chan int)
+	var workers sync.WaitGroup
+	for range min(64, len(files)) {
+		workers.Go(func() {
+			for i := range jobs {
+				f, err := os.Open(files[i].path)
+				if err != nil {
+					files[i].err = err
+					continue
+				}
+				digest := sha256.New()
+				_, files[i].err = io.Copy(digest, io.LimitReader(f, files[i].size+1))
+				if err := f.Close(); files[i].err == nil {
+					files[i].err = err
+				}
+				files[i].sum = digest.Sum(nil)
+			}
+		})
+	}
+	for i := range files {
+		jobs <- i
+	}
+	close(jobs)
+	workers.Wait()
+	for _, f := range files {
+		if f.err != nil {
+			return "", f.err
+		}
+		fmt.Fprintf(h, "%s\x00%d\x00%d\x00%x\n", f.path, f.mode, f.size, f.sum)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
@@ -248,8 +368,24 @@ func (l *Library) checkNativePromptCommands(ctx context.Context, t PromptTarget)
 	}
 	c := nativePromptCheck{key: s.key}
 	if t.ID == "dsh" {
-		step, cancel := context.WithTimeout(ctx, 30*time.Second)
-		c.commands, c.roots, c.err = readDSHPromptCommands(step, t, s)
+		// This budget includes two isolated native boots and a full content
+		// fingerprint of the active dependency graph between them.
+		step, cancel := context.WithTimeout(ctx, 90*time.Second)
+		var first []nativePromptCommand
+		first, c.roots, c.err = readDSHPromptCommands(step, t, s)
+		if c.err == nil {
+			s, c.err = l.nativePromptSnapshot(t, c.roots)
+			c.key = s.key
+			if c.err == nil {
+				var roots []string
+				c.commands, roots, c.err = readDSHPromptCommands(step, t, s)
+				before, _ := json.Marshal(first)
+				after, _ := json.Marshal(c.commands)
+				if c.err == nil && (string(before) != string(after) || !slices.Equal(c.roots, roots)) {
+					c.err = &promptRuntimeError{"Native command sources changed during verification", t.Name}
+				}
+			}
+		}
 		cancel()
 	} else {
 		// Discover resource locations, then stamp them BEFORE the authoritative
@@ -365,8 +501,9 @@ func readCodexPromptSkills(ctx context.Context, bin, dir string, cwds []string) 
 				return
 			}
 			var msg struct {
-				ID     int             `json:"id"`
+				ID     json.RawMessage `json:"id"`
 				Method string          `json:"method"`
+				Params json.RawMessage `json:"params"`
 				Result json.RawMessage `json:"result"`
 				Error  json.RawMessage `json:"error"`
 			}
@@ -378,13 +515,43 @@ func readCodexPromptSkills(ctx context.Context, bin, dir string, cwds []string) 
 				finish("Native command sources changed during verification")
 				return
 			}
+			if msg.Method == "configWarning" && len(msg.ID) == 0 && len(msg.Result) == 0 && len(msg.Error) == 0 {
+				var warning struct {
+					Summary *string `json:"summary"`
+				}
+				if json.Unmarshal(msg.Params, &warning) == nil && warning.Summary != nil {
+					// Classify the native warning without forwarding its summary,
+					// details or paths, which may contain configuration secrets.
+					finish("Codex configuration contains warnings; native verification is incomplete")
+					return
+				}
+			}
+			// Native app-server sends remote connection status independently of
+			// skill loading. Only its notification form (no id) is harmless.
+			// A request using the same method must never certify an inventory.
+			if msg.Method == "remoteControl/status/changed" && len(msg.ID) == 0 && len(msg.Result) == 0 && len(msg.Error) == 0 {
+				var status struct {
+					Status         *string `json:"status"`
+					ServerName     *string `json:"serverName"`
+					InstallationID *string `json:"installationId"`
+					EnvironmentID  *string `json:"environmentId"`
+				}
+				if json.Unmarshal(msg.Params, &status) == nil && status.Status != nil && status.ServerName != nil && status.InstallationID != nil && slices.Contains([]string{"disabled", "connecting", "connected", "errored"}, *status.Status) {
+					continue
+				}
+			}
 			// An authorization request or unsupported notification cannot be
 			// silently skipped and followed by an apparently complete inventory.
 			if msg.Method != "" {
 				finish("Native skill verification returned invalid output")
 				return
 			}
-			if msg.ID == 1 && !initialized {
+			var id int
+			if len(msg.ID) == 0 || string(msg.ID) == "null" || json.Unmarshal(msg.ID, &id) != nil {
+				finish("Native skill verification returned invalid output")
+				return
+			}
+			if id == 1 && !initialized {
 				var init map[string]any
 				if json.Unmarshal(msg.Result, &init) != nil || init == nil {
 					finish("Native skill verification returned invalid output")
@@ -397,8 +564,9 @@ func readCodexPromptSkills(ctx context.Context, bin, dir string, cwds []string) 
 				}
 				continue
 			}
-			if msg.ID != 2 {
-				continue
+			if id != 2 {
+				finish("Native skill verification returned invalid output")
+				return
 			}
 			if !initialized {
 				finish("Native skill verification returned invalid output")
@@ -445,6 +613,19 @@ func readCodexPromptSkills(ctx context.Context, bin, dir string, cwds []string) 
 			return nil, a.err
 		}
 		if stderr.failed() {
+			// Only classify a known native diagnostic; never expose arbitrary
+			// stderr, which may contain credentials or user content.
+			for _, line := range strings.Split(stderr.b.String(), "\n") {
+				var diagnostic struct {
+					Target string `json:"target"`
+					Fields struct {
+						Message string `json:"message"`
+					} `json:"fields"`
+				}
+				if json.Unmarshal([]byte(line), &diagnostic) == nil && diagnostic.Target == "codex_skills_extension::loader::metadata" && strings.Contains(diagnostic.Fields.Message, "invalid openai.yaml:") {
+					return bad("Native skill metadata could not be loaded; invocation policy is unverified")
+				}
+			}
 			return bad("Native skill sources could not be fully loaded")
 		}
 		return a.commands, nil

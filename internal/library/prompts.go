@@ -111,6 +111,23 @@ func (l *Library) putPromptText(id, text string) error {
 }
 
 func checkPromptName(name string) error {
+	if len(name) == 0 || len(name) > 60 {
+		return fmt.Errorf("prompt name must contain 1–60 characters")
+	}
+	for i, r := range name {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			continue
+		}
+		if r != '-' || i == 0 || i == len(name)-1 || name[i-1] == '-' {
+			return fmt.Errorf("prompt name: use lowercase letters and digits separated by single hyphens")
+		}
+	}
+	return nil
+}
+
+// Stored names keep their original validation so an older template never
+// prevents reading, exporting, deselecting or deleting the rest of the library.
+func checkStoredPromptName(name string) error {
 	if !utf8.ValidString(name) || name == "" || utf8.RuneCountInString(name) > 60 {
 		return fmt.Errorf("prompt name must contain 1–60 characters")
 	}
@@ -138,7 +155,7 @@ func checkPromptRecords(ps []*Prompt) error {
 		if err := checkName("prompt id", p.ID); err != nil {
 			return err
 		}
-		if err := checkPromptName(p.Name); err != nil {
+		if err := checkStoredPromptName(p.Name); err != nil {
 			return err
 		}
 		if ids[p.ID] || names[promptKey(p.Name)] {

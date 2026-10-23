@@ -62,6 +62,10 @@ func (l *Library) promptState(t PromptTarget, p *Prompt, text string) PromptStat
 		s.Status, s.Reason = "unsupported", "Not installed here"
 		return s
 	}
+	if checkPromptName(p.Name) != nil {
+		s.Status, s.Reason = "unverified", "Rename this template before editing or deploying"
+		return s
+	}
 	files, err := t.files(p, text)
 	if err != nil {
 		s.Status, s.Reason = "unsupported", err.Error()

@@ -10,6 +10,11 @@ const { strings } = require("./strings.cjs");
 test("native prompt capability diagnostics are translated", () => {
   const { I18N } = strings();
   for (const lang of ["zh", "zh-TW", "ja", "de"]) {
+    assert(I18N[lang]["Native skill metadata could not be loaded; invocation policy is unverified"], lang);
+    assert(I18N[lang]["Codex configuration contains warnings; native verification is incomplete"], lang);
+    for (const key of ["DeepSeek Harness plugin dependency could not be loaded", "DeepSeek Harness environment variable is restricted to the launching process"]) {
+      assert(I18N[lang][key], `${lang}: ${key}`);
+    }
     for (const key of ["Check native command availability again", "Native skill sources could not be fully loaded", "DeepSeek Harness skill source completeness could not be verified", "DeepSeek Harness configuration cannot be safely mapped", "Pi built-in command definitions could not be verified"]) {
       assert(I18N[lang][key], `${lang}: ${key}`);
     }

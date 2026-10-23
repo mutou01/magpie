@@ -72,6 +72,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await finder.locator("button").count(), 0, "search is immediate, without an action button");
       assert(await finder.locator(".lib-prompt-search").isVisible());
       await page.locator(".lib-prompt-add").press("Space");
+      assert.equal(await page.locator('[data-prompt="name"]').getAttribute("placeholder"), { en: "e.g. review-code", zh: "例如 review-code", "zh-TW": "例如 review-code", ja: "例：review-code", de: "z. B. review-code" }[lang]);
       const warning = await page.locator(".lib-prompt-runtime-note").textContent();
       assert(warning.includes({ en: "loads extensions", zh: "加载扩展", "zh-TW": "載入擴充功能", ja: "拡張機能", de: "Erweiterungen" }[lang]), "runtime side effects are explained in every language");
       await page.locator('[data-prompt="name"]').fill("waiting-template");
@@ -86,7 +87,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       finally { releaseCheck?.(); }
       await page.locator(".lib-prompt-error").filter({ hasText: "fixture save failed" }).waitFor();
       failSave = true; sent.length = 0;
-      await page.locator('[data-prompt="name"]').fill("审查");
+      await page.locator('[data-prompt="name"]').fill("review-code");
       await page.locator('[data-prompt="text"]').fill("检查边界条件。");
       await page.locator(".lib-prompt-check").click();
       await page.locator('.lib-prompt-target[data-agent="codex"] .lib-prompt-reason').waitFor();
@@ -105,6 +106,19 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator(".lib-prompt-check").click();
       await page.waitForFunction(() => !document.querySelector(".lib-prompt-check").disabled);
       assert.equal(sent.filter(s => s.p.endsWith("/check")).length, checksBefore + 1, "manual check always refreshes native commands");
+      const originalDSHState = states.at(-1);
+      for (const diagnostic of [
+        { reason: "DeepSeek Harness plugin dependency could not be loaded", source: "dsh-at-file: @deepseek-ai/dsh-settings", words: { en: "plugin dependency", zh: "插件缺少依赖", "zh-TW": "插件缺少相依", ja: "依存パッケージ", de: "Abhängigkeit" } },
+        { reason: "DeepSeek Harness environment variable is restricted to the launching process", source: "C:/fixture/.env: DSH_HOME", words: { en: "launching process", zh: "启动进程", "zh-TW": "啟動程序", ja: "起動プロセス", de: "startenden Prozess" } },
+      ]) {
+        states[states.length - 1] = { agent: "dsh", status: "unverified", ...diagnostic };
+        await page.locator(".lib-prompt-check").click();
+        const target = page.locator('.lib-prompt-target[data-agent="dsh"]');
+        await target.filter({ hasText: diagnostic.source }).waitFor();
+        assert((await target.textContent()).includes(diagnostic.words[lang]), "native failure reason is translated and retains its source");
+        assert(await target.locator("input").isDisabled(), "actionable errors must still block deployment");
+      }
+      states[states.length - 1] = originalDSHState;
       if (process.env.ARTIFACT_DIR && lang === "zh") {
         await fs.mkdir(process.env.ARTIFACT_DIR, { recursive: true });
         await page.evaluate(() => Promise.all(document.getAnimations().filter(a => a.effect?.getTiming().iterations !== Infinity).map(a => a.finished.catch(() => {}))));
@@ -225,10 +239,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // open the template editor while composition is in progress.
       await page.locator(".lib-prompt-search").evaluate(e => {
         e.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
-        e.value = "审查";
-        e.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true, data: "审查" }));
+        e.value = "边界";
+        e.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true, data: "边界" }));
         e.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter", isComposing: true }));
-        e.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "审查" }));
+        e.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "边界" }));
       });
       assert.equal(await page.locator(".lib-prompt-editor").count(), 0);
       assert.equal(await page.locator(".lib-prompt-row").count(), 1);
@@ -256,6 +270,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator(".lib-set.open .name").click();
       await page.locator(".lib-prompt-row .name").click();
       assert.equal(await page.locator('[data-prompt="name"]').inputValue(), "审查");
+      await page.locator('[data-prompt="name"]').fill("review-code");
       assert((await page.locator('.lib-prompt-target[data-agent="claude"]').textContent()).includes({ en: "Native behavior", zh: "原生行为", "zh-TW": "原生行為", ja: "動作は未検証", de: "Natives Verhalten" }[lang]), "editor retains native acceptance information");
       assert.equal(await page.locator("#modal select").count(), 0);
       assert(await page.locator("#modal").evaluate(el => el.scrollWidth <= el.clientWidth + 1));

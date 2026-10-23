@@ -21,7 +21,7 @@ func TestPromptTemplateAPISavesAndReads(t *testing.T) {
 	mux := http.NewServeMux()
 	libraryRoutes(mux, nil)
 	r := httptest.NewRecorder()
-	mux.ServeHTTP(r, httptest.NewRequest("POST", "/api/library/prompts/save", strings.NewReader(`{"name":"代码审查","text":"检查边界条件。","agents":[]}`)))
+	mux.ServeHTTP(r, httptest.NewRequest("POST", "/api/library/prompts/save", strings.NewReader(`{"name":"review-code","text":"检查边界条件。","agents":[]}`)))
 	if r.Code != http.StatusOK {
 		t.Fatalf("save prompt: %d %s", r.Code, r.Body.String())
 	}
@@ -33,7 +33,7 @@ func TestPromptTemplateAPISavesAndReads(t *testing.T) {
 	if err := json.Unmarshal(r.Body.Bytes(), &v); err != nil {
 		t.Fatal(err)
 	}
-	if len(v.Items) != 1 || v.Items[0].Name != "代码审查" || v.Items[0].Text != "检查边界条件。" || v.Items[0].ID == "" {
+	if len(v.Items) != 1 || v.Items[0].Name != "review-code" || v.Items[0].Text != "检查边界条件。" || v.Items[0].ID == "" {
 		t.Fatalf("saved template missing: %d %s", r.Code, r.Body.String())
 	}
 	id := v.Items[0].ID

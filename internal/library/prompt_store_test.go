@@ -38,19 +38,19 @@ func rewriteLibraryWithoutPrompts(t *testing.T) {
 
 func TestPromptTemplateSurvivesLegacyLibraryRewrite(t *testing.T) {
 	h := sandbox(t)
-	ok(t)(SavePrompt(PromptChange{Name: "审查", Text: "Keep my template.", Agents: []string{"claude"}}))
+	ok(t)(SavePrompt(PromptChange{Name: "review-code", Text: "Keep my template.", Agents: []string{"claude"}}))
 	rewriteLibraryWithoutPrompts(t)
 	v, err := ReadPrompts()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(v.Items) != 1 || v.Items[0].Name != "审查" || v.Items[0].Text != "Keep my template." {
+	if len(v.Items) != 1 || v.Items[0].Name != "review-code" || v.Items[0].Text != "Keep my template." {
 		t.Fatalf("legacy writer erased the template index: %+v", v.Items)
 	}
 	// Ownership must survive too: updating must not mistake our file for a
 	// user's command, and removal must still retire only that owned file.
-	ok(t)(SavePrompt(PromptChange{ID: v.Items[0].ID, Name: "审查", Text: "Updated template.", Agents: []string{"claude"}}))
-	command := filepath.Join(h, ".claude/commands/审查.md")
+	ok(t)(SavePrompt(PromptChange{ID: v.Items[0].ID, Name: "review-code", Text: "Updated template.", Agents: []string{"claude"}}))
+	command := filepath.Join(h, ".claude/commands/review-code.md")
 	if !strings.Contains(read(t, command), "Updated template.") {
 		t.Fatal("legacy writer erased deployment ownership")
 	}

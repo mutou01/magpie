@@ -266,7 +266,7 @@ func TestPromptTemplatePiRuntimeChecksCommandsAndReusesResults(t *testing.T) {
 		t.Fatal("explicit check did not ask native Pi for commands")
 	}
 	before := read(t, log)
-	ok(t)(SavePrompt(PromptChange{Name: "审查", Text: "body", Agents: []string{"pi"}}))
+	ok(t)(SavePrompt(PromptChange{Name: "review", Text: "body", Agents: []string{"pi"}}))
 	v, err := ReadPrompts()
 	if err != nil {
 		t.Fatal(err)

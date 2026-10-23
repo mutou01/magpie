@@ -1427,10 +1427,10 @@ magpie.plugin("library", (ctx) => {
     head.append(glyph(GLYPH.doc), el("b", "", t(p ? "Edit template" : "New template")));
     ed.append(head);
     const error = el("div", "editor-error lib-prompt-error");
-    const name = field2(d.name, t("e.g. review or 代码审查"), v => { d.name = v; checked = ""; });
+    const name = field2(d.name, t("e.g. review-code"), v => { d.name = v; checked = ""; });
     name.dataset.prompt = "name";
     name.setAttribute("aria-label", t("Name"));
-    ed.append(...field(t("Name"), name, t("Chinese or English letters, digits, - and _; up to 60 characters")));
+    ed.append(...field(t("Name"), name, t("Lowercase letters and digits separated by single hyphens; up to 60 characters")));
     const text = el("textarea", "lib-text small lib-prompt-text");
     text.dataset.prompt = "text"; text.value = d.text; text.spellcheck = false;
     text.setAttribute("aria-label", t("Template text"));

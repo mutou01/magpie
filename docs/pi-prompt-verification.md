@@ -1,5 +1,9 @@
 # Native prompt verification on Windows
 
+The [harness availability follow-up](harness-prompt-verification.md) supersedes
+the historical DSH blocking result below and records the current Codex warning
+boundary, dependency/source protections and native deployment acceptance.
+
 The behavior and API contract belong to the [Library reference](subsystems/library.md#prompt-templates).
 These checks exercise that contract without changing live configuration or using
 paid model endpoints. They do not certify Linux, WSL or Codex Desktop interaction.

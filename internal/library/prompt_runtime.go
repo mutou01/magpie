@@ -150,14 +150,19 @@ type boundedPiOutput struct {
 	sync.Mutex
 	b        strings.Builder
 	tooLarge bool
+	limit    int
 }
 
 func (w *boundedPiOutput) Write(b []byte) (int, error) {
 	w.Lock()
 	defer w.Unlock()
-	if w.b.Len()+len(b) > 1<<20 {
+	limit := w.limit
+	if limit == 0 {
+		limit = 1 << 20
+	}
+	if w.b.Len()+len(b) > limit {
 		w.tooLarge = true
-		return 0, fmt.Errorf("Pi output exceeds 1 MiB")
+		return 0, fmt.Errorf("native output exceeds %d bytes", limit)
 	}
 	return w.b.Write(b)
 }
