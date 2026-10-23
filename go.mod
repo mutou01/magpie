@@ -11,6 +11,7 @@ require (
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/klauspost/compress v1.18.3
 	github.com/pelletier/go-toml/v2 v2.2.4
+	github.com/tdewolff/parse/v2 v2.8.19
 	github.com/tidwall/gjson v1.19.0
 	github.com/tidwall/jsonc v0.3.3
 	github.com/wailsapp/wails/v3 v3.0.0-beta.24

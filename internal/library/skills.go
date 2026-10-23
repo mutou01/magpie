@@ -1810,6 +1810,9 @@ func foundSkills(l *Library) []FoundSkill {
 		for _, e := range es {
 			name := e.Name()
 			p := filepath.Join(pl.dir, name)
+			if l.isPromptSkill(p) {
+				continue
+			}
 			f := byName[name]
 			// magpie's link to the library's folder is an agent having the
 			// one found there

@@ -7,6 +7,15 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { strings } = require("./strings.cjs");
 
+test("native prompt capability diagnostics are translated", () => {
+  const { I18N } = strings();
+  for (const lang of ["zh", "zh-TW", "ja", "de"]) {
+    for (const key of ["Check native command availability again", "Native skill sources could not be fully loaded", "DeepSeek Harness skill source completeness could not be verified", "DeepSeek Harness configuration cannot be safely mapped", "Pi built-in command definitions could not be verified"]) {
+      assert(I18N[lang][key], `${lang}: ${key}`);
+    }
+  }
+});
+
 test("no language has a key twice", () => {
   const { files, twice } = strings();
   for (const { file, src } of files) {

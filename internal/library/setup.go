@@ -13,6 +13,7 @@ import (
 // as a profile keeps them to switch back to. The servers and the skills
 // themselves stay in the library: a setup only names them.
 type Setup struct {
+	Prompts      map[string][]string `json:"prompts,omitempty"`
 	Instructions SetupInstructions   `json:"instructions"`
 	MCP          map[string][]string `json:"mcp"`    // server → the agents that get it
 	Skills       map[string][]string `json:"skills"` // skill → the agents that get it
@@ -30,7 +31,7 @@ type SetupInstructions struct {
 // Empty reports whether the library had nothing in it when s was taken.
 func (s *Setup) Empty() bool {
 	i := s.Instructions
-	return len(s.MCP) == 0 && len(s.Skills) == 0 && i.Shared == "" && len(i.Agents) == 0 && len(i.Extra) == 0
+	return len(s.Prompts) == 0 && len(s.MCP) == 0 && len(s.Skills) == 0 && i.Shared == "" && len(i.Agents) == 0 && len(i.Extra) == 0
 }
 
 // Summary is what a setup gives out, in a few words: the servers and
@@ -53,7 +54,7 @@ func (s *Setup) Summary() string {
 		return fmt.Sprintf("%d %s", n, many)
 	}
 	var parts []string
-	for _, p := range []string{count(s.MCP, "server", "servers"), count(s.Skills, "skill", "skills")} {
+	for _, p := range []string{count(s.MCP, "server", "servers"), count(s.Skills, "skill", "skills"), count(s.Prompts, "prompt", "prompts")} {
 		if p != "" {
 			parts = append(parts, p)
 		}
@@ -121,6 +122,7 @@ func Snapshot() (*Setup, error) {
 		return nil, err
 	}
 	s := &Setup{
+		Prompts:      map[string][]string{},
 		Instructions: SetupInstructions{Set: l.active(), Shared: setText(l.sharedPath()), Agents: slices.Clone(l.Instructions.Agents), Extra: extras()},
 		MCP:          map[string][]string{},
 		Skills:       map[string][]string{},
@@ -136,6 +138,9 @@ func Snapshot() (*Setup, error) {
 	}
 	for _, x := range l.Skills {
 		s.Skills[x.Name] = append([]string{}, x.Agents...)
+	}
+	for _, x := range l.Prompts {
+		s.Prompts[x.ID] = append([]string{}, x.Agents...)
 	}
 	return s, nil
 }
@@ -180,6 +185,11 @@ func Holds(s *Setup) bool {
 	}
 	for name, agents := range s.Skills {
 		if x := l.skill(name); x != nil && !same(x.Agents, agents) {
+			return false
+		}
+	}
+	for id, agents := range s.Prompts {
+		if p := l.prompt(id); p != nil && !same(promptAgents(p.Agents), promptAgents(agents)) {
 			return false
 		}
 	}
@@ -240,6 +250,13 @@ func Restore(s *Setup) (*Result, error) {
 				missing = append(missing, "skill:"+name)
 			}
 		}
+		for id, agents := range s.Prompts {
+			if p := l.prompt(id); p != nil {
+				p.Agents = slices.Sorted(slices.Values(agents))
+			} else {
+				missing = append(missing, "prompt:"+id)
+			}
+		}
 		sort.Strings(missing)
 		return nil
 	})
@@ -265,7 +282,7 @@ func InUse() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	n := len(l.MCP) + len(l.Skills) + len(l.Hooks) + len(l.Projects)
+	n := len(l.Prompts) + len(l.MCP) + len(l.Skills) + len(l.Hooks) + len(l.Projects)
 	if len(l.Instructions.Agents) > 0 {
 		n++
 	}

@@ -3,6 +3,7 @@ package library
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 
@@ -66,6 +67,7 @@ func (l *Library) sync() *Result {
 	if b == nil {
 		b = newBackups()
 	}
+	l.kept = b
 	all := Targets()
 	for _, step := range syncSteps(all, l.held(all), b, res) {
 		step(l)
@@ -116,7 +118,11 @@ func syncSteps(all, gone []*Target, b *backups, res *Result) []func(*Library) {
 			}
 		}
 	}
-	return append(steps, func(l *Library) { l.syncProjects(res) })
+	return append(steps, func(l *Library) { l.syncProjects(res) }, func(l *Library) {
+		if len(l.Prompts) > 0 || slices.ContainsFunc(slices.Collect(maps.Values(l.Applied)), func(a *Applied) bool { return len(a.Prompts) > 0 }) {
+			l.syncPrompts(b, res)
+		}
+	})
 }
 
 // Sync writes the library into the agents again: after an agent is
@@ -143,6 +149,7 @@ func Sync() (*Result, error) {
 		if memo != nil && mu.held == heldAt+1 {
 			l.hashes, l.untouched = memo.hashes, memo.untouched
 		}
+		l.kept = b // index and deployment backups belong to this same sync
 		f(l)
 		if err := l.save(); err != nil {
 			return err
@@ -354,6 +361,7 @@ type SkillView struct {
 
 // View is the Library page.
 type View struct {
+	Prompts *PromptsView `json:"prompts"`
 	Agents  []AgentView  `json:"agents"`
 	Servers []ServerView `json:"servers"`
 	// Hooks are the library's hooks, and HookAgents what each agent on
@@ -415,7 +423,7 @@ func readView(problems []Problem, glance bool) (*View, error) {
 	// the agents are found once for the whole read: finding them looks
 	// through every agent's folders, in WSL too (#1624)
 	targets := Targets()
-	v := &View{Agents: []AgentView{}, Servers: []ServerView{}, Skills: []SkillView{}, FoundSkills: []FoundSkill{}, Instructions: l.instructionsView(targets), Dir: Dir(), Backups: BackupDir(), CopySkills: l.CopySkills, Partial: glance}
+	v := &View{Prompts: l.promptsView(), Agents: []AgentView{}, Servers: []ServerView{}, Skills: []SkillView{}, FoundSkills: []FoundSkill{}, Instructions: l.instructionsView(targets), Dir: Dir(), Backups: BackupDir(), CopySkills: l.CopySkills, Partial: glance}
 	for _, t := range targets {
 		av := AgentView{ID: t.Agent.ID, Name: t.Agent.Name, Icon: t.Agent.Icon, Instructions: t.Instructions, Skills: t.Skills,
 			SkillsAlso: t.SkillsAlso, Note: t.Note, MCPVia: t.MCPVia, ProjectSkills: ProjectSkillsDir(t.Agent.ID), ProjectMCP: ProjectMCPFile(t.Agent.ID),

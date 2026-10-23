@@ -1,0 +1,454 @@
+package library
+
+// Native inventories are process-local evidence. Neither page reads nor save /
+// sync may start a harness. A successful CLI probe does not certify Desktop UX.
+import (
+	"bufio"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/yetone/magpie/internal/proc"
+)
+
+type nativePromptCommand struct {
+	Name    string `json:"name"`
+	Path    string `json:"path"`
+	Enabled *bool  `json:"enabled,omitempty"`
+	managed bool
+}
+
+type nativePromptCheck struct {
+	key      string
+	roots    []string
+	commands []nativePromptCommand
+	err      error
+}
+
+var nativePromptChecks = struct {
+	sync.Mutex
+	m    map[string]nativePromptCheck
+	seq  map[string]uint64
+	next uint64
+}{m: map[string]nativePromptCheck{}, seq: map[string]uint64{}}
+
+type nativePromptSnapshot struct {
+	bin, key    string
+	dirs, roots []string
+}
+
+func nativePromptCacheKey(t PromptTarget) string { return t.ID + "\x00" + t.dir }
+
+func (l *Library) nativePromptSnapshot(t PromptTarget, extra []string) (nativePromptSnapshot, error) {
+	s := nativePromptSnapshot{bin: proc.FindTool(t.ID)}
+	if t.ID == "dsh" {
+		s.bin = dshPromptEntry(t.dir)
+	}
+	if s.bin == "" {
+		return s, &promptRuntimeError{"Could not find the native command-check entry point", t.Name}
+	}
+	s.roots = append([]string{s.bin, filepath.Join(t.dir, "config.toml"), filepath.Join(t.dir, "skills"), filepath.Join(t.dir, "plugins"), sharedSkillsDir()}, extra...)
+	// npm shims and their native package are separate resources. Hash their
+	// actual installed contents; a hash is never used as a compatibility gate.
+	for _, dir := range []string{filepath.Dir(s.bin), filepath.Dir(filepath.Dir(s.bin))} {
+		if t.ID == "codex" {
+			s.roots = append(s.roots, filepath.Join(dir, "node_modules", "@openai", "codex"), filepath.Join(dir, "node_modules", "@openai", "codex-win32-x64"))
+		}
+	}
+	if t.ID == "dsh" {
+		s.roots = append(s.roots, filepath.Join(t.dir, "profiles/web/package.json"), filepath.Join(t.dir, "profiles/web/cordis.patch.yml"), filepath.Join(t.dir, "cordis.patch.yml"), filepath.Join(t.dir, "settings.yaml"), filepath.Dir(s.bin))
+	}
+	dirs := []string{home()}
+	for _, p := range l.Projects {
+		dirs = append(dirs, p.Dir)
+	}
+	for _, dir := range dirs {
+		real, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			return s, err
+		}
+		if !slices.ContainsFunc(s.dirs, func(d string) bool { return promptSamePath(d, real) }) {
+			s.dirs = append(s.dirs, real)
+		}
+		for _, ancestor := range piSkillAncestors(real) {
+			s.roots = append(s.roots, filepath.Join(ancestor, ".agents", "skills"), filepath.Join(ancestor, ".codex", "config.toml"))
+		}
+		s.roots = append(s.roots, filepath.Join(real, ".dsh", "skills"), filepath.Join(real, ".dsh", "cordis.patch.yml"))
+	}
+	slices.Sort(s.dirs)
+	key, err := l.promptResourceKey(t, s.bin, s.dirs, s.roots)
+	s.key = key
+	return s, err
+}
+
+// Hash bytes, not merely mtime: replacing a same-sized source while preserving
+// timestamps must invalidate evidence too. Follow links and bound the traversal.
+func (l *Library) promptResourceKey(t PromptTarget, bin string, dirs, roots []string) (string, error) {
+	h := sha256.New()
+	fmt.Fprintf(h, "%s\x00%s\x00%s\n", t.dir, bin, strings.Join(dirs, "\x00"))
+	env := os.Environ()
+	slices.Sort(env)
+	fmt.Fprintln(h, strings.Join(env, "\x00"))
+	seen := map[string]bool{}
+	total := int64(0)
+	var walk func(string) error
+	walk = func(path string) error {
+		path = filepath.Clean(path)
+		if seen[path] {
+			return nil
+		}
+		seen[path] = true
+		if len(seen) > 50000 {
+			return fmt.Errorf("command source scan exceeds 50000 entries")
+		}
+		for _, a := range l.Applied {
+			for _, p := range a.Prompts {
+				if p == nil {
+					continue
+				}
+				for owned, hash := range p.Files {
+					if promptSamePath(path, owned) {
+						b, err := os.ReadFile(path)
+						if os.IsNotExist(err) {
+							return nil
+						}
+						if err != nil {
+							return err
+						}
+						if promptHash(b) == hash {
+							return nil
+						}
+					}
+				}
+			}
+		}
+		fi, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			real, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(h, "link:%s:%s\n", path, real)
+			return walk(real)
+		}
+		if fi.IsDir() {
+			entries, err := os.ReadDir(path)
+			if err != nil {
+				return err
+			}
+			for _, e := range entries {
+				if e.Name() == ".git" {
+					continue
+				}
+				if err := walk(filepath.Join(path, e.Name())); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		if !fi.Mode().IsRegular() {
+			return fmt.Errorf("non-file command source: %s", path)
+		}
+		total += fi.Size()
+		if total > 512<<20 {
+			return fmt.Errorf("command sources exceed 512 MiB")
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		fmt.Fprintf(h, "%s\x00%d\x00%d\n", path, fi.Mode(), fi.Size())
+		_, err = io.Copy(h, io.LimitReader(f, fi.Size()+1))
+		return err
+	}
+	roots = slices.Clone(roots)
+	slices.Sort(roots)
+	for _, root := range roots {
+		if err := walk(root); err != nil {
+			return "", err
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func (l *Library) nativePromptConflict(t PromptTarget, p *Prompt) (string, error) {
+	k := nativePromptCacheKey(t)
+	nativePromptChecks.Lock()
+	c, ok := nativePromptChecks.m[k]
+	nativePromptChecks.Unlock()
+	s, err := l.nativePromptSnapshot(t, c.roots)
+	if err != nil {
+		nativePromptChecks.Lock()
+		delete(nativePromptChecks.m, k)
+		nativePromptChecks.Unlock()
+		return "", err
+	}
+	if !ok || c.key != s.key {
+		nativePromptChecks.Lock()
+		delete(nativePromptChecks.m, k)
+		nativePromptChecks.Unlock()
+		return "", &promptRuntimeError{"Check native command availability again", t.Name}
+	}
+	if c.err != nil {
+		return "", c.err
+	}
+	for _, cmd := range c.commands {
+		if promptKey(cmd.Name) != promptKey(p.Name) {
+			continue
+		}
+		if cmd.Enabled != nil && !*cmd.Enabled {
+			files, _ := t.files(p, "")
+			for path := range files {
+				if promptSamePath(path, cmd.Path) {
+					return "", &promptRuntimeError{"This skill is disabled in Codex configuration", cmd.Path}
+				}
+			}
+		}
+		if cmd.managed {
+			continue
+		}
+		if cmd.Path != "" && l.promptOwns(t.ID, p.ID, cmd.Path) {
+			continue
+		}
+		if cmd.Path != "" {
+			return cmd.Path, nil
+		}
+		return t.Name + " /" + cmd.Name, nil
+	}
+	return "", nil
+}
+
+func (l *Library) checkNativePromptCommands(ctx context.Context, t PromptTarget) {
+	k := nativePromptCacheKey(t)
+	nativePromptChecks.Lock()
+	nativePromptChecks.next++
+	seq := nativePromptChecks.next
+	nativePromptChecks.seq[k] = seq
+	delete(nativePromptChecks.m, k)
+	nativePromptChecks.Unlock()
+	s, err := l.nativePromptSnapshot(t, nil)
+	if err != nil {
+		return
+	}
+	c := nativePromptCheck{key: s.key}
+	if t.ID == "dsh" {
+		step, cancel := context.WithTimeout(ctx, 30*time.Second)
+		c.commands, c.roots, c.err = readDSHPromptCommands(step, t, s)
+		cancel()
+	} else {
+		// Discover resource locations, then stamp them BEFORE the authoritative
+		// second enumeration. Reject a changing list or any incomplete context.
+		step, cancel := context.WithTimeout(ctx, 30*time.Second)
+		var first []nativePromptCommand
+		first, c.err = readCodexPromptSkills(step, s.bin, t.dir, s.dirs)
+		if c.err == nil {
+			for _, cmd := range first {
+				c.roots = append(c.roots, filepath.Dir(cmd.Path))
+			}
+			s, c.err = l.nativePromptSnapshot(t, c.roots)
+			c.key = s.key
+			if c.err == nil {
+				c.commands, c.err = readCodexPromptSkills(step, s.bin, t.dir, s.dirs)
+			}
+			if c.err == nil {
+				a, _ := json.Marshal(first)
+				b, _ := json.Marshal(c.commands)
+				if string(a) != string(b) {
+					c.err = &promptRuntimeError{"Native command sources changed during verification", t.Name}
+				}
+			}
+		}
+		cancel()
+	}
+	if c.err == nil {
+		for i := range c.commands {
+			for _, a := range l.Applied {
+				for pid := range a.Prompts {
+					if c.commands[i].Path != "" && l.promptOwns(t.ID, pid, c.commands[i].Path) {
+						c.commands[i].managed = true
+					}
+				}
+			}
+		}
+	}
+	after, err := l.nativePromptSnapshot(t, c.roots)
+	if err != nil || after.key != c.key {
+		c.err = &promptRuntimeError{"Native command sources changed during verification", t.Name}
+	}
+	if ctx.Err() != nil {
+		c.err = &promptRuntimeError{"Native command verification was cancelled", t.Name}
+	}
+	nativePromptChecks.Lock()
+	if nativePromptChecks.seq[k] == seq {
+		nativePromptChecks.m[k] = c
+	}
+	nativePromptChecks.Unlock()
+}
+
+// readCodexPromptSkills uses only initialize + skills/list, never thread/start,
+// turn/start or a user prompt. Each cwd must be represented with explicit lists.
+func readCodexPromptSkills(ctx context.Context, bin, dir string, cwds []string) ([]nativePromptCommand, error) {
+	bad := func(reason string) ([]nativePromptCommand, error) {
+		return nil, &promptRuntimeError{reason, "Codex CLI"}
+	}
+	cmd := proc.Command(bin, "app-server")
+	cmd.Dir = cwds[0]
+	cmd.Env = append(os.Environ(), "CODEX_HOME="+dir)
+	cmd.WaitDelay = time.Second
+	in, err := cmd.StdinPipe()
+	if err != nil {
+		return bad("Could not start native skill verification")
+	}
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		in.Close()
+		return bad("Could not start native skill verification")
+	}
+	stderr := &boundedPiOutput{}
+	cmd.Stderr = stderr
+	tree, err := proc.StartTree(cmd)
+	if err != nil {
+		in.Close()
+		return bad("Could not start native skill verification")
+	}
+	done := make(chan struct{})
+	go func() { tree.Wait(); close(done) }()
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			in.Close()
+			tree.Kill()
+			out.Close()
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+			}
+		})
+	}
+	defer stop()
+	type answer struct {
+		commands []nativePromptCommand
+		err      error
+	}
+	answers := make(chan answer, 1)
+	go func() {
+		finish := func(reason string) { _, err := bad(reason); answers <- answer{err: err} }
+		write := func(v any) bool { return json.NewEncoder(in).Encode(v) == nil }
+		if !write(map[string]any{"id": 1, "method": "initialize", "params": map[string]any{"clientInfo": map[string]string{"name": "magpie-prompt-check", "title": "Magpie prompt check", "version": "1"}}}) {
+			finish("Native skill verification returned invalid output")
+			return
+		}
+		scan := bufio.NewScanner(io.LimitReader(out, (1<<20)+1))
+		scan.Buffer(make([]byte, 4096), 1<<20)
+		total := 0
+		initialized := false
+		for scan.Scan() {
+			total += len(scan.Bytes()) + 1
+			if total > 1<<20 {
+				finish("Native skill verification returned invalid output")
+				return
+			}
+			var msg struct {
+				ID     int             `json:"id"`
+				Method string          `json:"method"`
+				Result json.RawMessage `json:"result"`
+				Error  json.RawMessage `json:"error"`
+			}
+			if json.Unmarshal(scan.Bytes(), &msg) != nil || len(msg.Error) > 0 && string(msg.Error) != "null" {
+				finish("Native skill verification returned invalid output")
+				return
+			}
+			if msg.Method == "skills/changed" {
+				finish("Native command sources changed during verification")
+				return
+			}
+			// An authorization request or unsupported notification cannot be
+			// silently skipped and followed by an apparently complete inventory.
+			if msg.Method != "" {
+				finish("Native skill verification returned invalid output")
+				return
+			}
+			if msg.ID == 1 && !initialized {
+				var init map[string]any
+				if json.Unmarshal(msg.Result, &init) != nil || init == nil {
+					finish("Native skill verification returned invalid output")
+					return
+				}
+				initialized = true
+				if !write(map[string]any{"method": "initialized"}) || !write(map[string]any{"id": 2, "method": "skills/list", "params": map[string]any{"cwds": cwds, "forceReload": true}}) {
+					finish("Native skill verification returned invalid output")
+					return
+				}
+				continue
+			}
+			if msg.ID != 2 {
+				continue
+			}
+			if !initialized {
+				finish("Native skill verification returned invalid output")
+				return
+			}
+			var result struct {
+				Data *[]struct {
+					Cwd    string                 `json:"cwd"`
+					Skills *[]nativePromptCommand `json:"skills"`
+					Errors *[]json.RawMessage     `json:"errors"`
+				} `json:"data"`
+			}
+			if json.Unmarshal(msg.Result, &result) != nil || result.Data == nil || len(*result.Data) != len(cwds) {
+				finish("Native skill sources could not be fully loaded")
+				return
+			}
+			seen := map[int]bool{}
+			var commands []nativePromptCommand
+			for _, row := range *result.Data {
+				i := slices.IndexFunc(cwds, func(cwd string) bool { return promptSamePath(cwd, row.Cwd) })
+				if i < 0 || seen[i] || row.Skills == nil || row.Errors == nil || len(*row.Errors) > 0 {
+					finish("Native skill sources could not be fully loaded")
+					return
+				}
+				seen[i] = true
+				for _, skill := range *row.Skills {
+					if skill.Name == "" || !filepath.IsAbs(skill.Path) || skill.Enabled == nil {
+						finish("Native skill sources could not be fully loaded")
+						return
+					}
+					commands = append(commands, skill)
+				}
+			}
+			slices.SortFunc(commands, func(a, b nativePromptCommand) int { return strings.Compare(a.Name+"\x00"+a.Path, b.Name+"\x00"+b.Path) })
+			answers <- answer{commands: commands}
+			return
+		}
+		finish("Native skill sources could not be fully loaded")
+	}()
+	select {
+	case a := <-answers:
+		stop()
+		if a.err != nil {
+			return nil, a.err
+		}
+		if stderr.failed() {
+			return bad("Native skill sources could not be fully loaded")
+		}
+		return a.commands, nil
+	case <-ctx.Done():
+		return bad("Native command verification timed out or was cancelled")
+	}
+}

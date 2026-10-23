@@ -14,6 +14,14 @@ import (
 // a temp dir of their own: what they leave in it is theirs, and a skill's
 // download left there fails the run (#2321).
 func TestMain(m *testing.M) {
+	if os.Getenv("MAGPIE_FAKE_CODEX") != "" && strings.HasPrefix(filepath.Base(os.Args[0]), "codex") {
+		fakePromptCodex()
+		os.Exit(0)
+	}
+	if os.Getenv("MAGPIE_FAKE_PI") != "" && (filepath.Base(os.Args[0]) == "pi" || strings.HasPrefix(filepath.Base(os.Args[0]), "pi.")) {
+		fakePromptPi()
+		os.Exit(0)
+	}
 	if os.Getenv(testenv.Marker) != "" {
 		testenv.Main(m) // started again by a test: in its temp dir already
 	}

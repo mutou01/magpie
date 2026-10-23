@@ -1,5 +1,49 @@
 # Dropdown browser regression
 
+## Prompt template list
+
+`library-prompts.test.cjs` checks the skill-style live search and native target
+icons, blocked explanations, target-only requests, coalesced repeated clicks,
+rollback on HTTP failure, keyboard focus/scroll retention, All with retained
+unverified selections, and individual removal of an expired target. It also
+keeps the editor's conflict checks, passive save preflight and failed-save draft
+coverage. One Codex control manages the shared native skill files and shows only
+the CLI's `/skills` / `$name` entry points, with no Desktop control or usage note.
+An existing unavailable Codex selection survives passive save preflight and can
+be explicitly removed; it cannot be enabled again while unavailable. Reload text appears only on
+successfully deployed targets. The explicit check warns
+that native extension/plugin startup can cause external side effects and is
+not a sandbox. Both Chromium and WebKit run English, Simplified/Traditional Chinese,
+Japanese and German, with light/dark themes and narrow windows. `ARTIFACT_DIR`
+retains editor and wide/narrow list screenshots. API fixtures are isolated from
+user templates, agent configuration and live Pi processes.
+
+`library-prompt-remove.test.cjs` covers skill-style row deletion and its
+localized confirmation, cancel without a request, stable-id payloads,
+duplicate prevention, failure/retry and reporting protected deployments.
+It retains search, shared drafts, bounded scroll and next/previous/search
+keyboard focus. Deferred target writes, failure-recovery reads and removal
+responses exercise global deletion/target-update exclusion across templates,
+including the editor's deletion entry point and cache redraw after removal.
+An older manual-refresh response must not restore a template removed meanwhile.
+The list test also requires no permanent native-acceptance badge while icon
+explanations, warning dots and editor acceptance information remain intact.
+Both tests use the same five languages and Windows browser engines; no
+harness or extension is launched. Backend owned-file/external-edit protection
+continues to be verified by the existing `TestPromptTemplate` Go tests.
+
+```sh
+node --test internal/gui/tests/library-prompts.test.cjs
+node --test internal/gui/tests/library-prompt-remove.test.cjs
+go test -tags nogui ./internal/library ./internal/gui -run '^TestPromptTemplate' -count=1 -timeout=10m
+```
+
+The Go target-update tests additionally cover latest-text preservation, unknown
+ids, per-target conflict/deployment failure, intervening user files, missing
+bodies and expired Pi caches. A real child-process protocol fixture verifies
+that target changes never start Pi; this is not native harness invocation
+acceptance. This list change is validated on Windows only.
+
 `plugin-gateway.test.cjs` checks gateway-only plugin identification, the existing
 JSON options editor and aggregate diagnostics in all five languages on Chromium
 and WebKit. It uses local API fixtures, saves options through the real page, and
