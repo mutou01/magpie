@@ -180,6 +180,39 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await all.waitFor();
       assert.equal(await all.getAttribute("aria-pressed"), "false");
       assert.equal(await page.locator(".lib-prompt-row .lib-tags .warn").count(), 1, "selected abnormal targets retain Needs attention");
+      for (const width of [560, 1100, 420]) {
+        await page.setViewportSize({ width, height: 900 });
+        const row = page.locator(".lib-prompt-row");
+        await row.locator(".lib-prompt-delete").focus();
+        await page.waitForFunction(() => getComputedStyle(document.activeElement.parentElement).opacity === "1");
+        const layout = await row.evaluate(e => {
+          const box = el => {
+            const r = el.getBoundingClientRect();
+            return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, centerY: r.top + r.height / 2 };
+          };
+          return {
+            row: box(e), warning: box(e.querySelector(".lib-tags .warn")),
+            targets: [...e.querySelectorAll(".lib-ag[data-agent]")].map(box),
+            name: box(e.querySelector(".who")), actions: box(e.querySelector(".lib-rowacts")),
+          };
+        });
+        for (const target of layout.targets) {
+          assert(Math.abs(layout.warning.centerY - target.centerY) <= 1, `Needs attention aligns with harness icons at ${width}px (${JSON.stringify(layout)})`);
+        }
+        const overlaps = (a, b) => a.left < b.right - 1 && a.right > b.left + 1 && a.top < b.bottom - 1 && a.bottom > b.top + 1;
+        for (const other of [layout.name, layout.actions, ...layout.targets]) {
+          assert(!overlaps(layout.warning, other), `Needs attention does not overlap template text or controls at ${width}px`);
+        }
+        for (const box of [layout.warning, layout.actions, ...layout.targets]) {
+          assert(box.left >= layout.row.left - 1 && box.right <= layout.row.right + 1 && box.top >= layout.row.top - 1 && box.bottom <= layout.row.bottom + 1, `template status and controls stay inside their row at ${width}px`);
+        }
+        assert(await page.locator("#view-library").evaluate(e => e.scrollWidth <= e.clientWidth + 1), `template list has no horizontal overflow at ${width}px`);
+        if (process.env.ARTIFACT_DIR && lang === "zh") {
+          await fs.mkdir(process.env.ARTIFACT_DIR, { recursive: true });
+          await page.screenshot({ path: path.join(process.env.ARTIFACT_DIR, `prompt-attention-${engine}-${width}.png`), fullPage: true });
+        }
+      }
+      await page.setViewportSize({ width: 560, height: 860 });
       const finishToggle = () => page.waitForFunction(() => !document.querySelector('.lib-prompt-row .lib-agents[aria-busy="true"]'));
       await all.focus();
       const scrollBefore = await page.locator("#view-library").evaluate(e => e.scrollTop);
@@ -214,6 +247,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await chip("pi").press("Space");
       await finishToggle();
       assert.deepEqual(sent.filter(s => s.p.endsWith("/agents")).at(-1).body.agents, [], "an abnormal target can be explicitly deselected");
+      assert.equal(await page.locator(".lib-prompt-row .lib-tags .warn").count(), 0, "Needs attention clears when the abnormal target is deselected");
       await chip("claude").press("Space");
       await finishToggle();
       items[0].agents = ["claude", "codex"];

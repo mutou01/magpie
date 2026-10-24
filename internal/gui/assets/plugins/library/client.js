@@ -1365,14 +1365,13 @@ magpie.plugin("library", (ctx) => {
         const who = el("div", "who");
         who.append(el("div", "name", "/" + p.name), el("div", "sub", p.error || p.text.split("\n").find(l => l.trim()) || t("Empty")));
         const tags = el("div", "lib-tags");
-        who.append(tags);
         const acts = removeAct(() => confirmRemovePrompt(p));
         const remove = acts[0]?.querySelector("button");
         if (remove) {
           remove.classList.add("lib-prompt-delete");
           remove.setAttribute("aria-label", t("Remove {name}?", { name: "/" + p.name }));
         }
-        row.append(glyph(GLYPH.doc), who, ...acts);
+        row.append(glyph(GLYPH.doc), who, tags, ...acts);
         row.onclick = () => editPrompt(lib.prompts.items.find(x => x.id === p.id) || p);
         row.onkeydown = e => { if (e.target === row && !e.isComposing && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); row.click(); } };
         list.append(row);

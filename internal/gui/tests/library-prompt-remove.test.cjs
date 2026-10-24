@@ -105,6 +105,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       finally { releaseRead?.(); }
       await busy();
       assert(await remove("b").isEnabled());
+      await page.locator("#view-library").hover();
+      await page.mouse.wheel(0, -2000);
+      await page.waitForFunction(() => document.querySelector("#view-library").scrollTop === 0);
       await page.locator(".lib-set .name").first().click();
       await page.locator('textarea[data-lib="set:default"]').fill("尚未保存的共享指令");
       holdRead = true;

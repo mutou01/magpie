@@ -5,8 +5,8 @@
 .lib-prompts > .lib-aside { padding: 0 12px; }
 .lib-prompt-finder { margin: 10px 12px; }
 .lib-prompt-editor textarea.lib-prompt-text { min-height: 150px; resize: vertical; }
-.lib-prompt-row .lib-tags { margin-top: 3px; }
 .lib-prompt-row .lib-tags:empty { display: none; }
+.lib-prompt-row > .lib-agents { align-items: center; }
 .lib-prompt-row .lib-ag[aria-busy="true"] { cursor: progress; opacity: .65; }
 .lib-prompt-targets { margin-top: 10px; display: flex; flex-direction: column; gap: 10px; }
 .lib-prompt-target { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; min-width: 0; overflow-wrap: anywhere; }
@@ -389,6 +389,9 @@ input.lib-setname:focus { border-color: var(--accent); box-shadow: 0 0 0 3px col
 
 @media (max-width: 560px) {
   .lib-list .row { flex-wrap: wrap; }
+  /* Keep the title beside its 26px document icon; status and targets share the next line. */
+  .lib-prompt-row > .who { flex-basis: calc(100% - 38px); }
+  .lib-prompt-row > .lib-tags { margin-left: auto; }
   .lib-agents { max-width: 100%; }
 }
 
