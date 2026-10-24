@@ -2,7 +2,7 @@
 
 This record supplements the [Library contract](subsystems/library.md#prompt-templates)
 and the [earlier native verification](pi-prompt-verification.md). It records the
-`bugfix/harness-prompt-availability` work on 2026-10-23; cross-platform builds do
+`bugfix/harness-prompt-availability` work on 2026-10-23 and 2026-10-24; cross-platform builds do
 not constitute runtime acceptance outside Windows.
 
 ## Original evidence and failure-first changes
@@ -45,11 +45,24 @@ not constitute runtime acceptance outside Windows.
   for multiple project contexts, home equal to invoking directory, and native
   bootstrap-variable rejection without exposing its value. Original files remain
   byte-identical. No custom dotenv parser substitutes for native behavior.
-- Native dependency-resolution diagnostics exposed `dsh-at-file` importing the
-  missing `@deepseek-ai/dsh-settings` peer on this account. Both an independent
-  missing-dependency fixture and the actual configured profile now identify the
-  plugin/dependency without returning arbitrary startup logs. An arbitrary
-  startup error containing a secret sentinel remains blocked without disclosure.
+- Native dependency-resolution diagnostics initially reported `dsh-at-file`
+  failing to import `@deepseek-ai/dsh-settings`. This was not proof that the
+  original installation lacked the dependency: linking the whole profile
+  `node_modules` changed the real importer path and lost native peer fallback.
+  `TestPromptTemplateOriginalDSHProfileLocalPeerFallback` failed before preserving
+  physical profile packages and passed afterwards. Existing native compatibility
+  grants also need their original `compatibility.json`; the separate grant test
+  first failed with a missing command, then passed after copying that file.
+  Actual unresolved dependencies and arbitrary startup errors remain blocking,
+  with sanitized diagnostics only. No dependency was installed or plugin disabled.
+- Codex's ignored `disable_response_storage` setting and another skill's malformed
+  metadata previously blocked unrelated templates. Separate public-interface
+  tests first failed, then passed after narrow classification. An ignored-setting
+  notice must contain exactly that single key and the current config path, with
+  no details. A metadata notice must bind to a file in the complete native list;
+  its skill name remains occupied, and the template's own bad policy remains
+  blocked. Unknown/mixed warnings, requests, unrelated stderr and missing/remote
+  metadata sources still fail closed.
 - New-name tests first accepted unsupported Unicode/underscore names. The legacy
   regression exercises literal old stored records through read, export, edit
   refusal, sync protection, disable, re-enable refusal, import, rename and delete.
@@ -61,7 +74,7 @@ Content verification is retained; bounded parallel reads and cached directory
 metadata reduce overhead, and the DSH two-pass budget is 90 seconds. This can
 still make checks and passive source validation expensive on large installations.
 
-## Observed results
+## Initial 2026-10-23 observations
 
 - Public `TestPromptTemplateOriginalDSHInventoryCompleteness`: the final
   expanded-source run passed in 123.76 seconds, reporting 38 command/skill
@@ -95,12 +108,12 @@ still make checks and passive source validation expensive on large installations
   4.91 seconds, identifying `dsh-at-file: @deepseek-ai/dsh-settings`; original
   `.env`, profile and patch fingerprints remained unchanged. The dependency was
   not installed and the plugin was not disabled.
-- Original Codex inventory remains blocked on this Windows account by existing
+- At that stage original Codex inventory was blocked on this Windows account by existing
   configuration warnings and skill metadata loading diagnostics. Its user-wide skill discovery can cross a
   temporary HOME through Windows native known-folder lookup. The existing
   `git-workflow/agents/openai.yaml` indentation warning has no independent proof
   of harmless invocation-policy behavior. That file was not changed. Clean
-  isolated Codex end-to-end acceptance is therefore outstanding; protocol fixture
+  isolated Codex end-to-end acceptance was therefore outstanding; protocol fixture
   success cannot stand in for that result. Earlier English CLI invocation
   evidence is linked above, with its warning and selection limitations.
   After junction and source-budget compatibility, the original wire exchange
@@ -145,6 +158,93 @@ it does not execute the full suite. No WSL distribution is available on this
 machine for a Linux runtime suite. These limits remain acceptance gaps, not
 permission to publish over a red run.
 
+## 2026-10-24 continuation
+
+Tests and native acceptance in this continuation are delegated to GPT-6.1 Sol
+at medium reasoning effort; implementation and read-only source review are
+separate. The new original-runtime tests create their own configuration and
+plugins outside the installation.
+
+- The DSH profile peer test passed in 136.87 seconds, covering active check,
+  passive reuse, a second active check and public save. Each individual check
+  retains its 90-second budget. The native compatibility-grant command test
+  passed in 51.05 seconds. These results supersede the earlier interpretation
+  that the screenshot established a missing installed peer.
+- The repeated public DSH inventory/deployment/native-invocation check passed
+  in 237.25 seconds. It verified the exact saved artifact, explicit body and
+  trailing text, ordinary chat without body injection, rejected model-driven
+  skill loading, and original source fingerprints. Empty-root additions and
+  dependency-alias retargeting invalidated earlier evidence.
+  Cancellation passed in 32.20 seconds: a Windows process handle confirmed the
+  original Node process exited, and a passive read could not revive its result.
+  ACL/provider adversarial checks passed in 27.99 seconds, environment-layer
+  checks in 64.00 seconds, and dependency/error-redaction checks in 11.86 seconds.
+- `TestPromptTemplateOriginalCodexConfiguredWarningsPreserveAvailability` passed
+  in 3.31 seconds with a test-owned ignored setting and unrelated malformed
+  skill metadata. Windows short/long path spelling alone did not reproduce a
+  failure; existing file-identity comparison already handles it.
+- `verify-codex-prompts.cjs` used a newly built magpie executable and the original
+  Codex CLI. Public HTTP passive check returned unverified, explicit check
+  returned available with the diagnostic, and save returned enabled. The CLI
+  then invoked that same deployed artifact against a loopback Responses model.
+  The model received the unique body and Chinese trailing argument; ordinary
+  chat received neither the body nor the explicit-only skill's discovery entry.
+  A deliberately broken policy in the temporary artifact produced a native
+  warning and made that skill discoverable in ordinary chat, demonstrating why
+  magpie must retain the own-policy block. Discovery did not itself inject the
+  body. All four native calls exited successfully; four selected original
+  program/configuration file fingerprints were unchanged. This is limited
+  evidence for those files, not a whole-machine side-effect audit.
+- A separate isolated copy of selected real configuration sections produced a
+  different `configWarning`: invalid configuration with fallback to defaults.
+  Its private details identify a Windows file-not-found error. That copy kept
+  root path settings such as `model_catalog_json`, but omitted their external
+  file dependencies and replaced the home/environment paths. It therefore
+  cannot establish a fault in the original configuration or the screenshot's
+  warning. Copying the original catalog into the same relative location, with
+  an equal SHA-256, removed that warning in the original app-server. The
+  remaining warning was exactly the ignored `disable_response_storage` key.
+  This establishes the dependency omission in the diagnostic copy. The copy
+  excluded MCP servers, plugins and hooks, so this result does not certify the
+  user's complete environment or every warning as harmless. Invalid-config
+  fallback warnings remain blocking.
+- The catalog investigation also exposed missing cache coverage.
+  `TestPromptTemplateCodexModelCatalogChangesInvalidateNativeEvidence` first
+  failed in all four cases: modifying or deleting a relative/absolute catalog
+  reference left the passive result available while `config.toml` stayed
+  unchanged. Adding the referenced file to the existing content fingerprint
+  made all four cases pass in 13.82 seconds. No configuration was rewritten.
+- Original Pi 1.4.0 passed the full procedure again: event-only extension,
+  registered command, skill namespace, English/Chinese native expansion and
+  management HTTP API, with isolated configuration and a loopback model.
+
+The final Windows and Linux `go vet ./...` checks passed (Linux with `nogui`),
+as did Windows, Linux `nogui` and macOS `nogui` builds. The Windows
+`go test -tags nogui ./... -count=1 -timeout=10m -p=2` run failed after
+1,761.63 seconds. Agent, gateway and Library exhausted their package budgets;
+GUI, omarchy, provider, shortcut, sqlitedb and usage also reported failures.
+Library reported `TestGoneAgentListedToTakeOut` and
+`TestCheckMixedServerEachSide` failures before reaching the timeout during
+`TestPromptTemplateCodexStatusNotificationDoesNotBlockAvailability`. At timeout,
+that test's current subcase had run for only three seconds; this alone does not
+establish a hung native probe. Prior develop failures do not waive this red run.
+The three tests were then run separately: all 11 Codex notification subcases
+passed in 34.47 seconds; the gone-agent skills and mixed Windows/WSL server
+checks still failed (0.68 and 0.92 seconds). The mixed-server fixture supplies
+an absolute Windows executable, which the production `checkSides` deliberately
+limits to the local side; the fixture expects a WSL result anyway. That finding
+does not resolve or waive either repository failure.
+
+The normally enabled prompt regression previously passed in 282.434 seconds;
+the later catalog cases passed separately after their fix. Chromium/WebKit
+prompt-page checks across five languages passed all 24 reported cases, and
+all four dictionary checks passed. The race detector could not start because
+CGO is disabled and no C compiler is available. Non-Windows runtime acceptance,
+the full user's Codex plugin/MCP environment, Codex notice consistency across
+concurrent cache replacement, and DSH linked-root routing changes remain
+unverified. These limits preclude a claim of complete acceptance. No push,
+merge or release follows from the passing targeted checks.
+
 ## Reproduce opt-in native checks
 
 Use the installed paths from the machine under test, without changing its files:
@@ -153,11 +253,9 @@ Use the installed paths from the machine under test, without changing its files:
 $env:MAGPIE_VERIFY_DSH_HOME = '<original DSH home>'
 $env:MAGPIE_VERIFY_NODE_BIN = '<original node.exe>'
 go test -tags nogui ./internal/library -run '^TestPromptTemplateOriginalDSH' -count=1 -v -timeout=12m
-$env:MAGPIE_VERIFY_DSH_EXPECT_DIAGNOSTIC = 'dsh-at-file: @deepseek-ai/dsh-settings'
-go test ./internal/library -run '^TestPromptTemplateOriginalDSHConfiguredDependencyFailure$' -count=1 -v
-$env:MAGPIE_VERIFY_CODEX_HOME = '<original Codex home>'
 $env:MAGPIE_VERIFY_CODEX_BIN = '<original native codex.exe>'
-go test ./internal/library -run '^TestPromptTemplateOriginalCodexConfiguredPolicyFailure$' -count=1 -v
+go test ./internal/library -run '^TestPromptTemplateOriginalCodexConfiguredWarningsPreserveAvailability$' -count=1 -v
+node internal/library/testdata/verify-codex-prompts.cjs '<original native codex.exe>' '<newly built magpie.exe>'
 node internal/library/testdata/verify-dsh-prompts.mjs '<original CLI lib/bin.js>' '<original DSH home>'
 node internal/library/testdata/verify-pi-prompts.cjs '<original Pi dist/cli.js>' '<newly built magpie.exe>'
 ```

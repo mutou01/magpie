@@ -149,13 +149,33 @@ envelopes. A schema-checked `remoteControl/status/changed` notification without
 an id may pass; requests, unknown messages and `skills/changed` invalidate the
 check. Loading warnings remain blocking unless independent evidence establishes
 their effect on naming, loading and explicit-only policy. They are not silently
-discarded because a skills list arrived afterwards. A native `configWarning`
-notification reports a configuration-warning block without exposing its summary,
-details or paths; it does not count as an available inventory.
+discarded because a skills list arrived afterwards.
+[`prompt_codex.go`](../../internal/library/prompt_codex.go) permits only the
+complete, single-key warning for the ignored `disable_response_storage` setting
+in the current user config. Unknown, combined or detailed configuration warnings
+still block without exposing arbitrary diagnostics. A malformed `agents/openai.yaml`
+may be reported as a non-blocking notice only when its local file URI binds to a
+skill in the complete native inventory. That skill's name remains reserved. A
+notice about the template being deployed still blocks: Codex defaults a malformed
+policy to implicit discovery. The independently valid template keeps its own
+explicit-only policy. Successful states retain the notice in `reason` and its
+verified sources in `source`; two enumerations must agree on notices as well as
+commands.
+The user configuration's `model_catalog_json` is also a source dependency:
+Codex reads relative references from its configuration directory, and a missing
+catalog can make native startup fall back to defaults. Its bytes and path
+identity therefore participate in passive invalidation even when `config.toml`
+itself has not changed.
 
 [`prompt_dsh.go`](../../internal/library/prompt_dsh.go) runs the original DeepSeek
 Harness through a separate native client in a physical temporary profile/storage
-copy. Only executable dependency directories are linked. Original config/state
+copy. The shared installation is linked, while ordinary profile-local dependency
+packages are physically copied and individual package links retain their native
+meaning. Linking the whole profile dependency directory changes the real
+importer path and can lose the native installation's peer fallback. Existing
+`compatibility.json` grants are copied with the profile; the checker never adds
+a grant. Copies and originals must retain their contents and link identities,
+and returned source paths map back to the originals. Original config/state
 are not linked or rewritten; legacy settings imports, executable YAML and
 unmappable resource/storage overrides stop before startup. The home `.env` is
 copied as a private physical file, then the original `loadLayeredEnv` supplies

@@ -65,7 +65,7 @@ func dshPromptCopyProfile(dir, temp string) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	for _, rel := range []string{"profiles/web/package.json", "profiles/web/cordis.patch.yml", "cordis.patch.yml", ".env"} {
+	for _, rel := range []string{"profiles/web/package.json", "profiles/web/compatibility.json", "profiles/web/cordis.patch.yml", "cordis.patch.yml", ".env"} {
 		path := filepath.Join(dir, filepath.FromSlash(rel))
 		b, err := os.ReadFile(path)
 		if os.IsNotExist(err) && rel != "profiles/web/package.json" {
@@ -170,22 +170,15 @@ func readDSHPromptContext(ctx context.Context, t PromptTarget, s nativePromptSna
 	if err := dshPromptCopyProfile(t.dir, temp); err != nil {
 		return bad("DeepSeek Harness configuration cannot be safely mapped", err.Error())
 	}
-	// Link executable dependencies only. Configuration, credentials, sessions
-	// and storage are physical temporary files, never links to the user's home.
+	// The shared installation stays linked. Profile-local packages are copied
+	// by the client: a directory link would move their real importers outside
+	// the native profile resolver's scope and lose installation peer fallback.
 	deps := filepath.Join(t.dir, "profiles", "node_modules")
 	if _, err := os.Stat(deps); err != nil {
 		return nil, nil, err
 	}
 	if err := os.Symlink(deps, filepath.Join(temp, "profiles", "node_modules")); err != nil {
 		return bad("DeepSeek Harness configuration cannot be safely mapped", "Could not link native dependencies")
-	}
-	profileDeps := filepath.Join(t.dir, "profiles", "web", "node_modules")
-	if _, err := os.Stat(profileDeps); err == nil {
-		if err := os.Symlink(profileDeps, filepath.Join(temp, "profiles", "web", "node_modules")); err != nil {
-			return bad("DeepSeek Harness configuration cannot be safely mapped", "Could not link profile dependencies")
-		}
-	} else if !os.IsNotExist(err) {
-		return nil, nil, err
 	}
 	helper := filepath.Join(temp, "probe.mjs")
 	if err := os.WriteFile(helper, []byte(dshPromptProbe), 0600); err != nil {

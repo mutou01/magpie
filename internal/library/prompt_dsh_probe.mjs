@@ -2,9 +2,9 @@
 // replaces a registry method, installs a plugin or submits an Agent input.
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import { dirname, resolve, join, isAbsolute } from 'node:path';
-import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { dirname, resolve, join, isAbsolute, relative } from 'node:path';
+import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync, lstatSync, statSync, readlinkSync, mkdirSync, symlinkSync } from 'node:fs';
+import { randomUUID, createHash } from 'node:crypto';
 let input = '';
 for await (const chunk of process.stdin) input += chunk;
 const request = JSON.parse(input);
@@ -30,6 +30,64 @@ const native = async spec => {
 let stage = 'native profile';
 const progress = value => { stage = value; process.stdout.write(JSON.stringify({ stage }) + '\n'); };
 const fail = message => { const error = new Error(message); error.inventoryReason = message; throw error; };
+const inside = (path, root) => { const rel = relative(root, path); return rel === '' || !isAbsolute(rel) && rel !== '..' && !rel.startsWith('../') && !rel.startsWith('..\\'); };
+const moduleSource = join(request.sourceHome, 'profiles/web/node_modules');
+const moduleCopy = join(request.home, 'profiles/web/node_modules');
+const copies = [];
+const digest = path => createHash('sha256').update(readFileSync(path)).digest('hex');
+const linkTarget = path => resolve(dirname(path), readlinkSync(path));
+// Preserve the native distinction between physical profile packages and linked
+// packages. Changing that distinction changes dependency/peer precedence.
+const copyProfileModules = () => {
+  let bytes = 0;
+  const copy = (from, to) => {
+    const stat = lstatSync(from, { throwIfNoEntry: false });
+    if (!stat) return;
+    if (copies.length >= 50000) fail('Profile dependency copy exceeds 50000 entries');
+    if (stat.isSymbolicLink()) {
+      const sourceTarget = linkTarget(from);
+      const target = inside(sourceTarget, moduleSource) ? join(moduleCopy, relative(moduleSource, sourceTarget)) : sourceTarget;
+      const directory = statSync(from, { throwIfNoEntry: false })?.isDirectory() ?? true;
+      symlinkSync(target, to, directory ? 'dir' : 'file');
+      copies.push({ from, to, kind: 'link', sourceTarget, target });
+    } else if (stat.isDirectory()) {
+      mkdirSync(to, { recursive: true, mode: 0o700 });
+      const names = readdirSync(from).sort();
+      copies.push({ from, to, kind: 'directory', names: JSON.stringify(names) });
+      for (const name of names) copy(join(from, name), join(to, name));
+    } else if (stat.isFile()) {
+      bytes += stat.size;
+      if (bytes > 1 << 30) fail('Profile dependency copy exceeds 1 GiB');
+      const data = readFileSync(from);
+      if (data.length !== stat.size) fail('Profile dependencies changed during verification');
+      writeFileSync(to, data, { mode: stat.mode & 0o777 });
+      copies.push({ from, to, kind: 'file', hash: createHash('sha256').update(data).digest('hex') });
+    } else fail('Profile dependency is not a file, directory or link');
+  };
+  copy(moduleSource, moduleCopy);
+};
+const verifyCopies = () => {
+  for (const entry of copies) {
+    const original = lstatSync(entry.from), copied = lstatSync(entry.to);
+    const matches = entry.kind === 'file'
+      ? original.isFile() && copied.isFile() && digest(entry.from) === entry.hash && digest(entry.to) === entry.hash
+      : entry.kind === 'directory'
+        ? original.isDirectory() && copied.isDirectory() && JSON.stringify(readdirSync(entry.from).sort()) === entry.names && JSON.stringify(readdirSync(entry.to).sort()) === entry.names
+        : original.isSymbolicLink() && copied.isSymbolicLink() && linkTarget(entry.from) === entry.sourceTarget && linkTarget(entry.to) === entry.target;
+    if (!matches) fail('Profile dependencies changed during verification');
+  }
+};
+// Only copied configuration, verified module copies and the shared dependency
+// link have original counterparts. Generated storage is never source evidence.
+const originalSource = path => {
+  if (!inside(path, request.home)) return path;
+  const rel = relative(request.home, path);
+  const original = join(request.sourceHome, rel);
+  if (inside(path, moduleCopy) || inside(path, join(request.home, 'profiles/node_modules')) ||
+      ['profiles/web/package.json', 'profiles/web/compatibility.json', 'profiles/web/cordis.patch.yml', 'cordis.patch.yml', '.env'].includes(rel.replaceAll('\\', '/'))) return original;
+  if (!existsSync(path) && !existsSync(original)) return original;
+  fail('Temporary runtime resource has no verified original source');
+};
 const packageName = value => typeof value === 'string' && value.length <= 214 && /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i.test(value);
 const dependencyDiagnostic = (error, plugin) => {
   if (!packageName(plugin)) return;
@@ -49,6 +107,7 @@ const dependencyDiagnostic = (error, plugin) => {
 let runtime;
 let result;
 try {
+  copyProfileModules();
   const boot = await native('@deepseek-ai/dsh-app-boot');
   const { runProfile } = await import(pathToFileURL(join(dirname(entry), 'profile-boot.js')).href);
   const profile = boot.loadProfileDirectory('dsh', join(request.home, 'profiles/web'), anchor);
@@ -146,7 +205,10 @@ try {
       else if (name in (manifest.dependencies ?? {}) && !(name in (manifest.optionalDependencies ?? {}))) fail('Native runtime dependency is unresolved');
     }
   };
+  const recordedModules = new Set();
   const recordModule = (specifier, base) => {
+    const key = JSON.stringify([specifier, base]);
+    if (recordedModules.has(key)) return;
     if (specifier === 'cordis:include') {
       // app-boot embeds Include in its published bundle. Fingerprint that
       // original owner as well as its runtime dependency graph.
@@ -158,6 +220,10 @@ try {
     if (!pkg) fail('Native plugin source is unresolved' + (/^[@a-z0-9_:/.-]+$/i.test(specifier) ? ': ' + specifier : ''));
     recordPackage(pkg.dir);
     sources.add(dirname(realpathSync(boot.resolvePluginResource(specifier, base))));
+    // These are sources, not a cached inventory. Every graph() still reads the
+    // native entries, presets and resolution; source bytes/aliases are stamped
+    // between two separate native launches and again before accepting evidence.
+    recordedModules.add(key);
   };
   const graph = async () => {
     const resolution = ctx.pluginPackages?.resolution;
@@ -275,7 +341,10 @@ try {
       } finally { await handle.dispose(); }
     } finally { await lease[Symbol.asyncDispose](); }
   }
-  result = { commands, sources: [...sources].sort(), complete: true };
+  verifyCopies();
+  if (realpathSync(join(request.home, 'profiles/node_modules')) !== realpathSync(join(request.sourceHome, 'profiles/node_modules'))) fail('Native dependency link changed during verification');
+  result = { commands: commands.map(command => ({ ...command, path: command.path ? originalSource(command.path) : '' })),
+    sources: [...new Set([...sources].map(originalSource))].sort(), complete: true };
 } catch (error) {
   // Arbitrary startup errors/logs may contain credentials; never forward them.
   const diagnostic = error.inventoryDiagnostic ?? error.entries?.map(entry => dependencyDiagnostic(entry.outcome?.error, entry.module)).find(Boolean);

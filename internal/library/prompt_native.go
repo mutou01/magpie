@@ -32,6 +32,7 @@ type nativePromptCheck struct {
 	key      string
 	roots    []string
 	commands []nativePromptCommand
+	notices  []codexPromptNotice
 	err      error
 }
 
@@ -58,6 +59,15 @@ func (l *Library) nativePromptSnapshot(t PromptTarget, extra []string) (nativePr
 		return s, &promptRuntimeError{"Could not find the native command-check entry point", t.Name}
 	}
 	s.roots = append([]string{s.bin, filepath.Join(t.dir, "config.toml"), filepath.Join(t.dir, "skills"), filepath.Join(t.dir, "plugins"), sharedSkillsDir()}, extra...)
+	if t.ID == "codex" {
+		catalog, err := codexPromptCatalog(t.dir)
+		if err != nil {
+			return s, err
+		}
+		if catalog != "" {
+			s.roots = append(s.roots, catalog)
+		}
+	}
 	// npm shims and their native package are separate resources. Hash their
 	// actual installed contents; a hash is never used as a compatibility gate.
 	for _, dir := range []string{filepath.Dir(s.bin), filepath.Dir(filepath.Dir(s.bin))} {
@@ -66,7 +76,7 @@ func (l *Library) nativePromptSnapshot(t PromptTarget, extra []string) (nativePr
 		}
 	}
 	if t.ID == "dsh" {
-		s.roots = append(s.roots, filepath.Join(t.dir, "profiles/web/package.json"), filepath.Join(t.dir, "profiles/web/cordis.patch.yml"), filepath.Join(t.dir, "cordis.patch.yml"), filepath.Join(t.dir, "settings.yaml"), filepath.Join(t.dir, ".env"), filepath.Dir(s.bin))
+		s.roots = append(s.roots, filepath.Join(t.dir, "profiles/web/package.json"), filepath.Join(t.dir, "profiles/web/compatibility.json"), filepath.Join(t.dir, "profiles/web/cordis.patch.yml"), filepath.Join(t.dir, "cordis.patch.yml"), filepath.Join(t.dir, "settings.yaml"), filepath.Join(t.dir, ".env"), filepath.Dir(s.bin))
 	}
 	dirs := []string{home()}
 	for _, p := range l.Projects {
@@ -340,10 +350,12 @@ func (l *Library) nativePromptConflict(t PromptTarget, p *Prompt) (string, error
 				}
 			}
 		}
-		if cmd.managed {
-			continue
-		}
-		if cmd.Path != "" && l.promptOwns(t.ID, p.ID, cmd.Path) {
+		if cmd.managed || cmd.Path != "" && l.promptOwns(t.ID, p.ID, cmd.Path) {
+			for _, notice := range c.notices {
+				if notice.SkillPath != "" && promptSamePath(notice.SkillPath, cmd.Path) {
+					return "", &promptRuntimeError{"Native skill metadata could not be loaded; invocation policy is unverified", notice.Source}
+				}
+			}
 			continue
 		}
 		if cmd.Path != "" {
@@ -391,20 +403,21 @@ func (l *Library) checkNativePromptCommands(ctx context.Context, t PromptTarget)
 		// Discover resource locations, then stamp them BEFORE the authoritative
 		// second enumeration. Reject a changing list or any incomplete context.
 		step, cancel := context.WithTimeout(ctx, 30*time.Second)
-		var first []nativePromptCommand
+		var first, current codexPromptInventory
 		first, c.err = readCodexPromptSkills(step, s.bin, t.dir, s.dirs)
 		if c.err == nil {
-			for _, cmd := range first {
+			for _, cmd := range first.Commands {
 				c.roots = append(c.roots, filepath.Dir(cmd.Path))
 			}
 			s, c.err = l.nativePromptSnapshot(t, c.roots)
 			c.key = s.key
 			if c.err == nil {
-				c.commands, c.err = readCodexPromptSkills(step, s.bin, t.dir, s.dirs)
+				current, c.err = readCodexPromptSkills(step, s.bin, t.dir, s.dirs)
+				c.commands, c.notices = current.Commands, current.Notices
 			}
 			if c.err == nil {
 				a, _ := json.Marshal(first)
-				b, _ := json.Marshal(c.commands)
+				b, _ := json.Marshal(current)
 				if string(a) != string(b) {
 					c.err = &promptRuntimeError{"Native command sources changed during verification", t.Name}
 				}
@@ -439,13 +452,13 @@ func (l *Library) checkNativePromptCommands(ctx context.Context, t PromptTarget)
 
 // readCodexPromptSkills uses only initialize + skills/list, never thread/start,
 // turn/start or a user prompt. Each cwd must be represented with explicit lists.
-func readCodexPromptSkills(ctx context.Context, bin, dir string, cwds []string) ([]nativePromptCommand, error) {
-	bad := func(reason string) ([]nativePromptCommand, error) {
-		return nil, &promptRuntimeError{reason, "Codex CLI"}
+func readCodexPromptSkills(ctx context.Context, bin, dir string, cwds []string) (codexPromptInventory, error) {
+	bad := func(reason string) (codexPromptInventory, error) {
+		return codexPromptInventory{}, &promptRuntimeError{reason, "Codex CLI"}
 	}
 	cmd := proc.Command(bin, "app-server")
 	cmd.Dir = cwds[0]
-	cmd.Env = append(os.Environ(), "CODEX_HOME="+dir)
+	cmd.Env = append(os.Environ(), "CODEX_HOME="+dir, "LOG_FORMAT=json")
 	cmd.WaitDelay = time.Second
 	in, err := cmd.StdinPipe()
 	if err != nil {
@@ -480,6 +493,7 @@ func readCodexPromptSkills(ctx context.Context, bin, dir string, cwds []string) 
 	defer stop()
 	type answer struct {
 		commands []nativePromptCommand
+		warnings []string
 		err      error
 	}
 	answers := make(chan answer, 1)
@@ -494,6 +508,7 @@ func readCodexPromptSkills(ctx context.Context, bin, dir string, cwds []string) 
 		scan.Buffer(make([]byte, 4096), 1<<20)
 		total := 0
 		initialized := false
+		var warnings []string
 		for scan.Scan() {
 			total += len(scan.Bytes()) + 1
 			if total > 1<<20 {
@@ -517,11 +532,21 @@ func readCodexPromptSkills(ctx context.Context, bin, dir string, cwds []string) 
 			}
 			if msg.Method == "configWarning" && len(msg.ID) == 0 && len(msg.Result) == 0 && len(msg.Error) == 0 {
 				var warning struct {
-					Summary *string `json:"summary"`
+					Summary *string         `json:"summary"`
+					Details json.RawMessage `json:"details"`
+					Path    json.RawMessage `json:"path"`
+					Range   json.RawMessage `json:"range"`
 				}
-				if json.Unmarshal(msg.Params, &warning) == nil && warning.Summary != nil {
-					// Classify the native warning without forwarding its summary,
-					// details or paths, which may contain configuration secrets.
+				decoder := json.NewDecoder(strings.NewReader(string(msg.Params)))
+				decoder.DisallowUnknownFields()
+				if decoder.Decode(&warning) == nil && warning.Summary != nil {
+					empty := func(value json.RawMessage) bool { return len(value) == 0 || string(value) == "null" }
+					if empty(warning.Details) && empty(warning.Path) && empty(warning.Range) && codexIgnoredPromptSetting(*warning.Summary, dir) {
+						warnings = append(warnings, *warning.Summary)
+						continue
+					}
+					// Unknown warnings remain blocking; arbitrary summaries or
+					// details may contain credentials and are never displayed.
 					finish("Codex configuration contains warnings; native verification is incomplete")
 					return
 				}
@@ -601,7 +626,7 @@ func readCodexPromptSkills(ctx context.Context, bin, dir string, cwds []string) 
 				}
 			}
 			slices.SortFunc(commands, func(a, b nativePromptCommand) int { return strings.Compare(a.Name+"\x00"+a.Path, b.Name+"\x00"+b.Path) })
-			answers <- answer{commands: commands}
+			answers <- answer{commands: commands, warnings: warnings}
 			return
 		}
 		finish("Native skill sources could not be fully loaded")
@@ -610,25 +635,16 @@ func readCodexPromptSkills(ctx context.Context, bin, dir string, cwds []string) 
 	case a := <-answers:
 		stop()
 		if a.err != nil {
-			return nil, a.err
+			return codexPromptInventory{}, a.err
 		}
-		if stderr.failed() {
-			// Only classify a known native diagnostic; never expose arbitrary
-			// stderr, which may contain credentials or user content.
-			for _, line := range strings.Split(stderr.b.String(), "\n") {
-				var diagnostic struct {
-					Target string `json:"target"`
-					Fields struct {
-						Message string `json:"message"`
-					} `json:"fields"`
-				}
-				if json.Unmarshal([]byte(line), &diagnostic) == nil && diagnostic.Target == "codex_skills_extension::loader::metadata" && strings.Contains(diagnostic.Fields.Message, "invalid openai.yaml:") {
-					return bad("Native skill metadata could not be loaded; invocation policy is unverified")
-				}
-			}
-			return bad("Native skill sources could not be fully loaded")
+		inventory := codexPromptInventory{Commands: a.commands}
+		if len(a.warnings) != 0 {
+			inventory.Notices = append(inventory.Notices, codexPromptNotice{Source: filepath.Join(dir, "config.toml") + ": disable_response_storage"})
 		}
-		return a.commands, nil
+		if reason := codexPromptDiagnostics(stderr, a.warnings, &inventory); reason != "" {
+			return bad(reason)
+		}
+		return inventory, nil
 	case <-ctx.Done():
 		return bad("Native command verification timed out or was cancelled")
 	}

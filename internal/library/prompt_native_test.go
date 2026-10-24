@@ -40,25 +40,30 @@ func TestPromptTemplateOriginalCodexSkillInventory(t *testing.T) {
 	write(t, filepath.Join(dir, "skills/audit-code/agents/openai.yaml"), "policy:\n  allow_implicit_invocation: false\n")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	commands, err := readCodexPromptSkills(ctx, bin, dir, []string{h})
+	inventory, err := readCodexPromptSkills(ctx, bin, dir, []string{h})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range commands {
+	for _, c := range inventory.Commands {
 		if c.Name == "audit-code" && promptSamePath(c.Path, path) && c.Enabled != nil && *c.Enabled {
 			t.Log("Original app-server listed isolated explicit-only skill")
 			return
 		}
 	}
-	t.Fatalf("original CLI did not list fixture: %+v", commands)
+	t.Fatalf("original CLI did not list fixture: %+v", inventory.Commands)
 }
 
-func TestPromptTemplateOriginalCodexConfiguredPolicyFailure(t *testing.T) {
-	dir, bin := os.Getenv("MAGPIE_VERIFY_CODEX_HOME"), os.Getenv("MAGPIE_VERIFY_CODEX_BIN")
-	if runtime.GOOS != "windows" || dir == "" || bin == "" {
-		t.Skip("opt-in diagnosis of an original configured Codex installation")
+func TestPromptTemplateOriginalCodexConfiguredWarningsPreserveAvailability(t *testing.T) {
+	bin := os.Getenv("MAGPIE_VERIFY_CODEX_BIN")
+	if runtime.GOOS != "windows" || bin == "" {
+		t.Skip("opt-in original Codex with an isolated warning fixture")
 	}
 	h, _ := promptCodexFixture(t)
+	dir := filepath.Join(h, ".codex")
+	write(t, filepath.Join(dir, "config.toml"), "disable_response_storage = true\n")
+	foreign := filepath.Join(h, ".agents/skills/foreign-warning")
+	write(t, filepath.Join(foreign, "SKILL.md"), "---\nname: foreign-warning\ndescription: Isolated unrelated metadata warning\n---\nForeign body\n")
+	write(t, filepath.Join(foreign, "agents/openai.yaml"), "policy:\n\tallow_implicit_invocation: false\n")
 	t.Setenv("CODEX_HOME", dir)
 	t.Setenv("PATH", filepath.Dir(bin)+string(os.PathListSeparator)+filepath.Join(h, "bin")+string(os.PathListSeparator)+filepath.Join(os.Getenv("SystemRoot"), "System32"))
 	states, err := CheckPrompt(PromptChange{Name: "audit-code"})
@@ -67,16 +72,15 @@ func TestPromptTemplateOriginalCodexConfiguredPolicyFailure(t *testing.T) {
 	}
 	for _, s := range states {
 		if s.Agent == "codex" {
-			if s.Status != "unverified" || !slices.Contains([]string{"Native skill metadata could not be loaded; invocation policy is unverified", "Codex configuration contains warnings; native verification is incomplete"}, s.Reason) {
-				t.Fatalf("configured policy failure was not reported accurately: %+v", s)
+			if s.Status != "available" || s.Reason != "Codex ignored unrelated configuration or skill metadata; this template is unaffected" || s.Source == "" {
+				t.Fatalf("configured unrelated warnings must preserve verified independent availability: %+v", s)
 			}
-			t.Logf("Original Codex configured profile: %s", s.Reason)
+			t.Log("Original Codex isolated warning profile retained independent availability")
 			return
 		}
 	}
 	t.Fatal("original Codex was not detected")
 }
-
 func TestPromptTemplateOriginalDSHInventoryCompleteness(t *testing.T) {
 	dir := os.Getenv("MAGPIE_VERIFY_DSH_HOME")
 	if dir == "" {
@@ -482,6 +486,19 @@ func fakePromptCodex() {
 		case "initialized":
 		case "skills/list":
 			mode, _ := os.ReadFile(filepath.Join(os.Getenv("USERPROFILE"), "codex-mode"))
+			for _, output := range []struct {
+				name string
+				file *os.File
+			}{{"codex-notification.json", os.Stdout}, {"codex-diagnostic.json", os.Stderr}} {
+				if b, err := os.ReadFile(filepath.Join(os.Getenv("USERPROFILE"), output.name)); err == nil {
+					fmt.Fprintln(output.file, string(b))
+				}
+			}
+			if string(mode) == "ignored-legacy-config" {
+				summary := "Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.\n  user (" + filepath.Join(os.Getenv("USERPROFILE"), ".codex/config.toml") + "): `disable_response_storage` is ignored."
+				json.NewEncoder(os.Stdout).Encode(map[string]any{"method": "configWarning", "params": map[string]any{"summary": summary, "details": nil}})
+				json.NewEncoder(os.Stderr).Encode(map[string]any{"level": "ERROR", "target": "codex_app_server", "fields": map[string]any{"message": summary}})
+			}
 			if string(mode) == "config-warning" {
 				json.NewEncoder(os.Stdout).Encode(map[string]any{"method": "configWarning", "params": map[string]any{"summary": "PRIVATE_CONFIG_DIAGNOSTIC", "details": nil}})
 			}
@@ -512,6 +529,10 @@ func fakePromptCodex() {
 			}
 			if string(mode) == "metadata-warning" {
 				fmt.Fprintln(os.Stderr, `{"level":"WARN","target":"codex_skills_extension::loader::metadata","fields":{"message":"ignoring file:///fixture/agents/openai.yaml: invalid openai.yaml: found character that cannot start any token; secret=do-not-forward"}}`)
+			}
+			if string(mode) == "foreign-metadata-warning" {
+				policy := filepath.ToSlash(filepath.Join(os.Getenv("USERPROFILE"), ".agents/skills/foreign-audit/agents/openai.yaml"))
+				json.NewEncoder(os.Stderr).Encode(map[string]any{"level": "WARN", "target": "codex_skills_extension::loader::metadata", "fields": map[string]any{"message": "ignoring file:///" + strings.TrimPrefix(policy, "/") + ": invalid openai.yaml: found character that cannot start any token"}})
 			}
 			if string(mode) == "approval" {
 				json.NewEncoder(os.Stdout).Encode(map[string]any{"id": 42, "method": "item/commandExecution/requestApproval", "params": map[string]any{}})

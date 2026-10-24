@@ -134,6 +134,7 @@ func (l *Library) promptState(t PromptTarget, p *Prompt, text string) PromptStat
 			s.Status = "enabled"
 		}
 	}
+	s.Reason, s.Source = codexPromptWarning(t)
 	return s
 }
 
