@@ -89,6 +89,7 @@ const originalSource = path => {
   fail('Temporary runtime resource has no verified original source');
 };
 const packageName = value => typeof value === 'string' && value.length <= 214 && /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i.test(value);
+const exportName = value => typeof value === 'string' && value.length <= 128 && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(value);
 const dependencyDiagnostic = (error, plugin) => {
   if (!packageName(plugin)) return;
   const pending = [error], seen = new Set();
@@ -99,6 +100,10 @@ const dependencyDiagnostic = (error, plugin) => {
     if (current.code === 'ERR_MODULE_NOT_FOUND' || current.code === 'MODULE_NOT_FOUND') {
       const match = /^Cannot find (?:package|module) ['"]([^'"\r\n]+)['"]/.exec(current.message ?? '');
       if (match && packageName(match[1])) return { kind: 'dependency', plugin, dependency: match[1] };
+    }
+    if (current.name === 'SyntaxError' && typeof current.message === 'string') {
+      const match = /^The requested module ['"]([^'"\r\n]+)['"] does not provide an export named ['"]([^'"\r\n]+)['"]$/.exec(current.message);
+      if (match && packageName(match[1]) && exportName(match[2])) return { kind: 'export', plugin, dependency: match[1], export: match[2] };
     }
     pending.push(current.cause);
     if (Array.isArray(current.errors)) pending.push(...current.errors.slice(0, 32));

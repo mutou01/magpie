@@ -24,6 +24,7 @@ var dshPromptProbe string
 
 var dshPromptPackageName = regexp.MustCompile(`(?i)^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$`)
 var dshPromptVariableName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var dshPromptExportName = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*$`)
 
 func dshPromptEntry(dir string) string {
 	for _, base := range []string{filepath.Join(dir, "profiles", "node_modules", "@deepseek-ai", "dsh"), filepath.Join(dir, "node_modules", "@deepseek-ai", "dsh")} {
@@ -231,6 +232,7 @@ func readDSHPromptContext(ctx context.Context, t PromptTarget, s nativePromptSna
 			Kind       string `json:"kind"`
 			Plugin     string `json:"plugin"`
 			Dependency string `json:"dependency"`
+			Export     string `json:"export"`
 			Variable   string `json:"variable"`
 			Layer      string `json:"layer"`
 		} `json:"diagnostic"`
@@ -245,6 +247,9 @@ func readDSHPromptContext(ctx context.Context, t PromptTarget, s nativePromptSna
 		d := result.Diagnostic
 		if d.Kind == "dependency" && len(d.Plugin) <= 214 && len(d.Dependency) <= 214 && dshPromptPackageName.MatchString(d.Plugin) && dshPromptPackageName.MatchString(d.Dependency) {
 			return bad("DeepSeek Harness plugin dependency could not be loaded", d.Plugin+": "+d.Dependency)
+		}
+		if d.Kind == "export" && len(d.Plugin) <= 214 && len(d.Dependency) <= 214 && len(d.Export) <= 128 && dshPromptPackageName.MatchString(d.Plugin) && dshPromptPackageName.MatchString(d.Dependency) && dshPromptExportName.MatchString(d.Export) {
+			return bad("DeepSeek Harness plugin requires an export unavailable in the installed dependency", d.Plugin+": "+d.Dependency+" ("+d.Export+")")
 		}
 		if d.Kind == "environment" && len(d.Variable) <= 256 && dshPromptVariableName.MatchString(d.Variable) && (d.Layer == "user" || d.Layer == "project") {
 			root := cwd

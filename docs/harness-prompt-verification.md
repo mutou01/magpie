@@ -245,6 +245,49 @@ concurrent cache replacement, and DSH linked-root routing changes remain
 unverified. These limits preclude a claim of complete acceptance. No push,
 merge or release follows from the passing targeted checks.
 
+## DSH missing-export diagnosis
+
+The later `Native plugin graph contains an inactive or unresolved entry`
+report was traced to `dsh-at-file`: it imports `settingsNamespace` from
+`@deepseek-ai/dsh-settings`, but the installed dependency does not export that
+name. An external read-only client using the original installation's profile
+and native resolver reproduced the same `SyntaxError`; this was not an
+isolation-copy failure or a plugin waiting for a service.
+
+The adapter now distinguishes this exact native missing-export error from
+arbitrary syntax errors. It reports a static translated reason and the bounded,
+validated plugin, dependency and export names. The result remains unverified.
+No plugin, dependency or original configuration is changed, and no inactive
+plugin is silently excluded to make the check pass. This diagnostic change
+does not make the incompatible installed plugin usable.
+
+Sol medium ran only checks related to this diagnostic change. The public
+`CheckPrompt` missing-export test first failed in 6.41 seconds with the generic
+graph error. After the fix, the same test passed, including recovery to
+available after repairing only its test-owned plugin (92.03 seconds total).
+Five adversarial syntax-error cases passed in 31.17 seconds: arbitrary text,
+a private dependency path, an invalid export identifier, an overlong identifier
+and a trailing payload all remained blocked without disclosing private text.
+The native probe's 90-second budget was unchanged. The translation-key test
+also failed before the dictionaries were updated; the related translation-key,
+duplicate-key, syntax and formatting checks passed afterwards. No full suite
+was run for this change, as requested.
+
+The separate public check of the configured installation passed its diagnostic
+assertions in 7.47 seconds: unverified with
+`dsh-at-file: @deepseek-ai/dsh-settings (settingsNamespace)`. Five selected
+existing files retained their fingerprints: `.env`, the web profile manifest,
+its patch, `cordis.yml`, and the failing plugin's `lib/index.js`. The root patch
+did not exist. This is limited evidence for those files, not a full installation
+audit. The existing missing-dependency diagnostic and arbitrary-startup-error
+regression also passed (11.72 seconds total).
+
+Cleanup of this check's private diagnostic directory was rejected by automatic
+approval review with only `blocked by policy`. It remains at
+`C:/Users/Administrator/AppData/Local/Temp/magpie-dsh-graph-diag-56d5e70efc5d4dc3aff50fcf5dc29cb0`,
+contains isolated configuration and private logs, and must not be shared.
+No alternate cleanup was attempted.
+
 ## Reproduce opt-in native checks
 
 Use the installed paths from the machine under test, without changing its files:

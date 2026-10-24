@@ -195,11 +195,13 @@ original registry/provider classes through read-only structural capabilities.
 Missing layouts, runtime registrations, unknown providers, incomplete snapshots
 or inactive/unresolved plugin graphs remain unverified.
 For a native module-resolution failure, the reason can name the failed plugin
-and missing dependency, after validating package-name syntax; raw startup logs
-are never forwarded. Filesystem providers
-must retain the original class and discovery methods; subclasses or per-instance
-method replacements cannot certify completeness. They contribute every native
-root, including empty/missing roots. The Windows ACL
+and missing dependency, after validating package-name syntax. A native missing
+named-export error also identifies the dependency and export, with bounded
+package names and an ASCII JavaScript identifier. Both failures remain
+unverified; arbitrary errors and raw startup logs are never forwarded.
+Filesystem providers must retain the original class and discovery methods;
+subclasses or per-instance method replacements cannot certify completeness.
+They contribute every native root, including empty/missing roots. The Windows ACL
 provider's temporary resources must equal the installed assets; evidence uses
 the stable installed paths, never random derived paths. The loaded ACL body and
 invocation metadata must also agree with the original packaged skill, including
