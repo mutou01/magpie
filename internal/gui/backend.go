@@ -43,6 +43,9 @@ func startBackend() (gw *gateway.Server) {
 	// Codex's background app-server, restarted when it has the list from
 	// before a change and no codex session is on it (luci)
 	go agent.KeepCodexDaemonCurrent(backendCtx)
+	// the Codex app, reopened once its account is used up and magpie is
+	// its provider, which it reads only as it opens (MasterYi)
+	go keepCodexAppSending(backendCtx)
 	// the compactions magpie made in Codex's threads written as Codex's
 	// own, so a thread goes on when Codex talks to OpenAI itself
 	go agent.KeepCodexRolloutsPortable(backendCtx)
@@ -118,7 +121,9 @@ func serveGateway() *gateway.Server {
 func serveGatewayLocked() *gateway.Server {
 	// handing over, the one there is this one's predecessor, which lets go
 	// once this one listens beside it
-	if !gateway.Handover {
+	// so is the one that handed this one its socket, still finishing its
+	// requests on it (gui/handover.go)
+	if !gateway.Handover && !gateway.Inherited() {
 		if o := gateway.ServedBy(); o.Running {
 			if update.Newer(gateway.Version, o.Version) {
 				log.Printf("gateway: magpie %s serves %s, older than this one (%s); agents' requests go through it until it quits", o.Version, gateway.URL(), gateway.Version)

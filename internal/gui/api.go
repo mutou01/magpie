@@ -1198,6 +1198,10 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		if _, sent := fields["imageTimeout"]; !sent {
 			in.ImageTimeout = cur.ImageTimeout
 		}
+		// nor how long a routing group's classifier is given (#2934)
+		if _, sent := fields["classifyTimeout"]; !sent {
+			in.ClassifyTimeout = cur.ClassifyTimeout
+		}
 		in.AgentOrder, in.AgentsHidden, in.AgentsShown = cur.AgentOrder, cur.AgentsHidden, cur.AgentsShown
 		in.Window, in.WindowMaximised = cur.Window, cur.WindowMaximised // the window's own, as it was last resized
 		// and what other pages keep here: which models an agent is shown, and
@@ -1235,6 +1239,9 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		in.RedactActions = cur.RedactActions               // set on their own (redact-actions below)
 		in.RedactAllow = cur.RedactAllow                   // set on its own (redact-allow below)
 		in.DisabledModels = cur.DisabledModels             // set on their own (disabled-models below, #1867)
+		// the request archive on this computer: the archive's switch while no
+		// S3 bucket, and its size in settings.json only
+		in.RequestArchiveLocal, in.RequestArchiveLocalMB = cur.RequestArchiveLocal, cur.RequestArchiveLocalMB
 		// used or left is the Usage page's toggle as much as Settings', set on its own
 		in.QuotaLeft = cur.QuotaLeft
 		in.QuotaReads = cur.QuotaReads // set on its own (quota-reads below)
@@ -1243,6 +1250,8 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		in.PanelUsageHidden = cur.PanelUsageHidden
 		// and the clients the Usage page's Agents list leaves out, set there
 		in.UsageAgentsHidden = cur.UsageAgentsHidden
+		// and the names models' usage is counted under (magpie model alias)
+		in.UsageAliases = cur.UsageAliases
 		// and the clients it counts as agents, set there too (#1958)
 		in.ClientAgents = cur.ClientAgents
 		// how agents' lists name models, set on its own for the agents to be told
