@@ -1,8 +1,8 @@
 package gateway
 
 // What a request's prompt is made of: the agent's system prompt, its tool
-// definitions, the instruction files it read in (CLAUDE.md, AGENTS.md,
-// skills), the files its tools read, its tools' other output, and the
+// definitions, the skills it lists, the instruction files it read in
+// (CLAUDE.md, AGENTS.md), the files its tools read, its tools' other output, and the
 // conversation, each as the tokens it takes of the model's context window.
 // Read from the body the agent sent, as it sent it: the parsed Request has
 // the system blocks run together, and Codex's additional_tools lifted out.
@@ -31,13 +31,14 @@ import (
 const (
 	PartSystem  = "system"  // the agent's own prompt: system, developer and harness messages
 	PartTools   = "tools"   // tool definitions
-	PartMemory  = "memory"  // instruction files, skills, reminders
+	PartSkills  = "skills"  // the skills the agent lists for the model to load
+	PartMemory  = "memory"  // instruction files, reminders
 	PartFiles   = "files"   // files and images the tools read in
 	PartResults = "results" // the tools' other output
 	PartChat    = "chat"    // what the user and the model said, the model's calls
 )
 
-var partOrder = []string{PartSystem, PartTools, PartMemory, PartFiles, PartResults, PartChat}
+var partOrder = []string{PartSystem, PartTools, PartSkills, PartMemory, PartFiles, PartResults, PartChat}
 
 // Prompt is a request's prompt, part by part.
 type Prompt struct {
@@ -108,7 +109,8 @@ type promptBuilder struct {
 
 // PromptPiece is a stretch of an item's text as the request sent it: a
 // message, a tool's definition, a call and its input, what a tool
-// answered. An image or sealed reasoning is only named, with its size.
+// answered. Sealed reasoning is only named, with its size; an image is
+// its picture when the request carried it inline (Src).
 type PromptPiece struct {
 	// Role: system, user, assistant, thinking, call, result, tool, image,
 	// sealed; "" for text that is the item itself (an instruction file)
@@ -116,7 +118,11 @@ type PromptPiece struct {
 	Name string `json:"name,omitempty"` // the tool called or defined
 	Text string `json:"text,omitempty"`
 	Size int    `json:"size,omitempty"` // a sealed piece's bytes
-	raw  []byte // JSON (or a custom tool's text), Text once read out
+	// Src: an image's picture as a data: URL, when the request sent it
+	// inline as a PNG, JPEG, GIF or WebP; a linked image stays a name
+	Src string `json:"src,omitempty"`
+	raw []byte // JSON (or a custom tool's text), Text once read out
+	img []byte // an image's source as the request sent it, Src once read out
 }
 
 func txt(role, s string) PromptPiece { return PromptPiece{Role: role, Text: s} }
@@ -125,7 +131,9 @@ func rawPiece(role, name string, raw []byte) PromptPiece {
 	return PromptPiece{Role: role, Name: name, raw: raw}
 }
 
-var imagePiece = PromptPiece{Role: "image"}
+// imgPiece is an image, its source (an Anthropic source, an image_url,
+// Gemini's inlineData) kept to be read out as its picture.
+func imgPiece(src []byte) PromptPiece { return PromptPiece{Role: "image", img: src} }
 
 func sealedPiece(n int) PromptPiece { return PromptPiece{Role: "sealed", Size: n} }
 
@@ -227,6 +235,40 @@ func (b *promptBuilder) prompt() *Prompt {
 		p.Parts = append(p.Parts, part)
 	}
 	return p
+}
+
+// skillsApart reads a prompt kept when the skills were memory: they are
+// their own part, before it.
+func (p *Prompt) skillsApart() {
+	if p == nil {
+		return
+	}
+	for i, x := range p.Parts {
+		if x.Kind != PartMemory {
+			continue
+		}
+		skills := PromptPart{Kind: PartSkills}
+		kept := x.Items[:0:0]
+		for _, it := range x.Items {
+			if it.Tag == "skills" {
+				skills.Tokens += it.Tokens
+				skills.Items = append(skills.Items, it)
+			} else {
+				kept = append(kept, it)
+			}
+		}
+		if skills.Tokens == 0 {
+			return
+		}
+		x.Tokens -= skills.Tokens
+		x.Items = kept
+		parts := append(append(p.Parts[:i:i], skills), x)
+		if x.Tokens <= 0 {
+			parts = parts[:i+1]
+		}
+		p.Parts = append(parts, p.Parts[i+1:]...)
+		return
+	}
 }
 
 // promptOf reads what a request's prompt holds; nil when the body isn't
@@ -363,6 +405,28 @@ func (b *promptBuilder) splitMemory(text string) string {
 	return rest.String()
 }
 
+// skillsList heads the skills Claude Code lists, in its own prompt or a
+// reminder; the list runs to the next blank line.
+const skillsList = "The following skills are available for use with the Skill tool:"
+
+// splitSkills takes the list of skills out of a text, as skills, and
+// returns what is left.
+func (b *promptBuilder) splitSkills(text, role string) string {
+	at := strings.Index(text, skillsList)
+	if at < 0 {
+		return text
+	}
+	body := text[at+len(skillsList):]
+	items := strings.TrimLeft(body, "\n")
+	end := len(text)
+	if j := strings.Index(items, "\n\n"); j >= 0 {
+		end -= len(items) - j
+	}
+	list := text[at:end]
+	b.add(PartSkills, "skills", "skills", tokensOf(list), txt(role, list))
+	return text[:at] + strings.TrimLeft(text[end:], "\n")
+}
+
 // harnessName names a system or developer text by its leading tag, or
 // what it is.
 func harnessName(text, fallback string) string {
@@ -378,9 +442,12 @@ func harnessName(text, fallback string) string {
 // systemText adds the agent's own prompt, with the instruction files in
 // it taken out as memory.
 func (b *promptBuilder) systemText(text, name string) {
-	rest := b.splitMemory(text)
+	rest := b.splitSkills(b.splitMemory(text), "system")
 	if strings.HasPrefix(strings.TrimSpace(rest), "<skills_instructions>") {
-		b.add(PartMemory, "skills", "skills", tokensOf(rest), txt("system", rest))
+		b.add(PartSkills, "skills", "skills", tokensOf(rest), txt("system", rest))
+		return
+	}
+	if strings.TrimSpace(rest) == "" {
 		return
 	}
 	b.add(PartSystem, harnessName(rest, name), "", tokensOf(rest), txt("system", rest))
@@ -392,7 +459,7 @@ func (b *promptBuilder) userText(text string) (said bool) {
 	t := strings.TrimSpace(text)
 	switch {
 	case strings.HasPrefix(t, "<system-reminder>"):
-		rest := b.splitMemory(t)
+		rest := b.splitSkills(b.splitMemory(t), "user")
 		rest = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(rest), "<system-reminder>"), "</system-reminder>"))
 		if rest != "" {
 			b.add(PartMemory, "reminders", "reminder", tokensOf(rest), txt("user", rest))
@@ -714,7 +781,7 @@ func (b *promptBuilder) anthropicBlock(role string, x rawBlock) {
 		for _, c := range blocksOf(x.Content) {
 			switch c.Type {
 			case "image", "document":
-				b.add(PartFiles, c.Type, "image", imageTokens, imagePiece)
+				b.add(PartFiles, c.Type, "image", imageTokens, imgPiece(c.Source))
 			default:
 				n += tokensOf(c.Text)
 				texts = append(texts, c.Text)
@@ -731,7 +798,7 @@ func (b *promptBuilder) anthropicBlock(role string, x rawBlock) {
 			b.add(PartFiles, "document", "image", rawTokens(x.Source), rawPiece("", "", x.Source))
 			return
 		}
-		b.add(PartFiles, x.Type, "image", imageTokens, imagePiece)
+		b.add(PartFiles, x.Type, "image", imageTokens, imgPiece(x.Source))
 	default:
 		b.chat(tokensOf(x.Text), txt(role, x.Text))
 	}
@@ -853,7 +920,7 @@ func (b *promptBuilder) responsesItem(raw json.RawMessage) {
 			}
 			for _, p := range parts {
 				if p.image {
-					b.add(PartFiles, "image", "image", imageTokens, imagePiece)
+					b.add(PartFiles, "image", "image", imageTokens, imgPiece(p.src))
 					continue
 				}
 				b.userText(p.text)
@@ -897,7 +964,7 @@ func (b *promptBuilder) responsesItem(raw json.RawMessage) {
 			var texts []string
 			for _, p := range responsesContent(it.Output) {
 				if p.image {
-					b.add(PartFiles, "image", "image", imageTokens, imagePiece)
+					b.add(PartFiles, "image", "image", imageTokens, imgPiece(p.src))
 					continue
 				}
 				n += tokensOf(p.text)
@@ -921,6 +988,7 @@ func (b *promptBuilder) responsesItem(raw json.RawMessage) {
 type rPart struct {
 	text  string
 	image bool
+	src   json.RawMessage // an image's image_url
 }
 
 func responsesContent(c json.RawMessage) []rPart {
@@ -929,13 +997,14 @@ func responsesContent(c json.RawMessage) []rPart {
 		return []rPart{{text: s}}
 	}
 	var ps []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type     string          `json:"type"`
+		Text     string          `json:"text"`
+		ImageURL json.RawMessage `json:"image_url"`
 	}
 	_ = decodeJSON(c, &ps)
 	out := make([]rPart, 0, len(ps))
 	for _, p := range ps {
-		out = append(out, rPart{text: p.Text, image: p.Type == "input_image" || p.Type == "input_file" || p.Type == "image_url"})
+		out = append(out, rPart{text: p.Text, image: p.Type == "input_image" || p.Type == "input_file" || p.Type == "image_url", src: p.ImageURL})
 	}
 	return out
 }
@@ -978,7 +1047,7 @@ func (b *promptBuilder) chatCompletions(body []byte) bool {
 			}
 			for _, p := range parts {
 				if p.image {
-					b.add(PartFiles, "image", "image", imageTokens, imagePiece)
+					b.add(PartFiles, "image", "image", imageTokens, imgPiece(p.src))
 					continue
 				}
 				b.userText(p.text)
@@ -988,7 +1057,7 @@ func (b *promptBuilder) chatCompletions(body []byte) bool {
 			var texts []string
 			for _, p := range parts {
 				if p.image {
-					b.add(PartFiles, "image", "image", imageTokens, imagePiece)
+					b.add(PartFiles, "image", "image", imageTokens, imgPiece(p.src))
 					continue
 				}
 				n += tokensOf(p.text)
@@ -1086,7 +1155,7 @@ func (b *promptBuilder) gemini(body []byte) bool {
 				}
 				b.result(id, rawTokens(p.FunctionResponse.Response), rawPiece("result", "", p.FunctionResponse.Response))
 			case len(p.InlineData) > 0 || len(p.FileData) > 0:
-				b.add(PartFiles, "image", "image", imageTokens, imagePiece)
+				b.add(PartFiles, "image", "image", imageTokens, imgPiece(p.InlineData))
 			case c.Role == "model":
 				role := "assistant"
 				if p.Thought {

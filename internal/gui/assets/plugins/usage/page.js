@@ -639,6 +639,10 @@ try {
   const m = localStorage.getItem("magpie.ledMetric");
   if (["tokens", "cost", "calls", "speed"].includes(m)) ledMetric = m;
 } catch {}
+// Columns or lines (molvqingtai on Discord), kept per viewer as the metric
+// is; anything but "line", or a read that fails, is columns.
+let ledLine = false;
+try { ledLine = localStorage.getItem("magpie.ledChart") === "line"; } catch {}
 
 // The filters a click set for the reader rather than one they picked in a
 // filter's menu: someone in the chart's ranking or a day of its columns
@@ -807,7 +811,7 @@ function ledServed(r) {
   }
   if (!r.swapped) return el("span", "model-value", r.served);
   const k = el("span", "swap", r.served);
-  k.title = window.swapWhy ? window.swapWhy({ model: r.model, served: r.served }) : "";
+  k.title = window.swapWhy ? window.swapWhy({ model: r.model, served: r.served, upstream: r.upstream }, { pinUnknown: true }) : "";
   return k;
 }
 
@@ -1130,6 +1134,118 @@ function renderLedgerDash(l) {
   drawLedTrend();
 }
 
+// the chart's two looks, as a pair of icons beside the metrics: columns
+// (the default) or lines
+const LED_STYLES = [["bars", "Bar chart", "M3.5 13V8.5M8 13V3.5M12.5 13V6.5"], ["line", "Line chart", "M2.5 11.5 6 7.5l3 2.5 4.5-6"]];
+function ledStyle(host) {
+  const cur = ledLine ? "line" : "bars";
+  host.setAttribute("role", "group");
+  host.setAttribute("aria-label", t("Chart style"));
+  host.replaceChildren();
+  for (const [id, name, d] of LED_STYLES) {
+    const b = el("button", "opt" + (id === cur ? " on" : ""));
+    b.type = "button";
+    b.dataset.style = id;
+    b.title = t(name);
+    b.setAttribute("aria-label", t(name));
+    b.setAttribute("aria-pressed", id === cur ? "true" : "false");
+    b.append(svg(d, 14, 1.7));
+    b.onclick = () => {
+      if (id === cur) return;
+      ledLine = id === "line";
+      try { localStorage.setItem("magpie.ledChart", id); } catch {}
+      drawLedTrend();
+    };
+    host.append(b);
+  }
+  slide(host, "ledStyle");
+}
+
+// The chart as lines (drawLedColumns' box.drawn): the columns drawn on its
+// axis are taken away and each one told apart becomes a line through its
+// points. Tokens, cost and requests stay stacked, each line where its part
+// of the column ended, with its band softly filled under it, so the top
+// line is the total as the column's top was; speeds don't add up, so each
+// model's line is at its own speed, broken where it had none, over the
+// point's own speed dashed. The tooltip, the hover, a day's pick and the
+// ranking's emphasis are drawLedColumns' own, over the same slots.
+// A smooth line through points [x, y], as d3's curveMonotoneX draws it
+// (Fritsch–Carlson): it bends between points but never past one, so a
+// quiet hour isn't drawn dipping under zero or a peak over its value.
+// "from" starts it ("M", or "L" to go on from where a path is).
+function ledCurve(ps, from = "M") {
+  const n = ps.length, f = (v) => v.toFixed(1);
+  if (!n) return "";
+  let d = from + f(ps[0][0]) + " " + f(ps[0][1]);
+  if (n === 1) return d;
+  const s = [], m = [];
+  for (let i = 0; i < n - 1; i++) s.push((ps[i + 1][1] - ps[i][1]) / (ps[i + 1][0] - ps[i][0]));
+  for (let i = 1; i < n - 1; i++) {
+    const h0 = ps[i][0] - ps[i - 1][0], h1 = ps[i + 1][0] - ps[i][0], p = (s[i - 1] * h1 + s[i] * h0) / (h0 + h1);
+    m[i] = s[i - 1] * s[i] <= 0 ? 0 : (Math.sign(s[i - 1]) + Math.sign(s[i])) * Math.min(Math.abs(s[i - 1]), Math.abs(s[i]), Math.abs(p) / 2);
+  }
+  m[0] = n > 2 ? (3 * s[0] - m[1]) / 2 : s[0];
+  m[n - 1] = n > 2 ? (3 * s[n - 2] - m[n - 2]) / 2 : s[0];
+  for (let i = 0; i < n - 1; i++) {
+    const [xa, ya] = ps[i], [xb, yb] = ps[i + 1], dx = (xb - xa) / 3;
+    d += "C" + f(xa + dx) + " " + f(ya + dx * m[i]) + " " + f(xb - dx) + " " + f(yb - dx * m[i + 1]) + " " + f(xb) + " " + f(yb);
+  }
+  return d;
+}
+
+function ledLines(g, Y, x0, slot, segs) {
+  const l = ledger, pts = l?.series || [], metric = ledMetric, split = ledSplit;
+  for (const r of segs) r.remove();
+  segs.length = 0;
+  if (!l) return;
+  const speed = metric === "speed";
+  const { top } = ledCategories(l.chartBy ? { by: l.chartBy } : l, split, metric);
+  const X = (i) => x0 + slot * i, dot = slot >= 12 ? 4.5 : 3;
+  const at = (i, v) => [X(i), Y(v)];
+  // stacked, each one goes under those before it, so a band never covers
+  // the line under it
+  let head = null;
+  const totals = pts.map((p) => ledValue(metric, p));
+  // one series: its line, the dots at its points and the band under it
+  const series = (key, color, vals, base, dashed) => {
+    const s = sv("g", { class: "col ln", "data-k": key, "data-day": l.day || "", "data-color": color }, { stroke: color });
+    // each unbroken run is one smooth curve; a point alone in its run has
+    // no line to sit on, so it is a dot
+    let line = "", dots = "", run = [];
+    const end = () => {
+      if (run.length === 1 && !dashed) dots += "M" + run[0][0].toFixed(1) + " " + run[0][1].toFixed(1) + "h0";
+      line += ledCurve(run);
+      run = [];
+    };
+    vals.forEach((v, i) => { if (v == null) end(); else run.push(at(i, v)); });
+    end();
+    if (!line) return;
+    if (base) {
+      const up = ledCurve(vals.map((v, i) => at(i, v)));
+      const down = ledCurve(base.map((v, i) => at(i, v)).reverse(), "L");
+      s.append(sv("path", { d: up + down + "Z", class: "band" }, { fill: color }));
+    }
+    s.append(sv("path", { d: line, class: "line" + (dashed ? " all" : "") }));
+    if (dots) s.append(sv("path", { d: dots, class: "dots" }, { strokeWidth: dot }));
+    head = g.insertBefore(s, speed ? null : head);
+    segs.push(s);
+  };
+  if (speed) {
+    series("\0all", "var(--muted)", totals.map((v) => (v > 0 ? v : null)), null, true);
+    for (const c of top) series(c.id, c.color, pts.map((p) => ledSpeed(p.by?.[split]?.[c.id]) || null));
+    return;
+  }
+  // from the bottom up: each one's part on what is under it, "Other" last
+  let under = pts.map(() => 0);
+  const parts = top.map((c) => [c.id, c.color, pts.map((p) => ledPart(metric, p.by?.[split]?.[c.id] || {}))]);
+  parts.push(["\0other", "var(--faint)", pts.map((p, i) => Math.max(0, totals[i] - parts.reduce((a, x) => a + x[2][i], 0)))]);
+  for (const [key, color, vs] of parts) {
+    const over = under.map((u, i) => u + vs[i]);
+    if (vs.some((v) => v > 0)) series(key, color, over, under);
+    under = over;
+  }
+}
+
 function drawLedTrend() {
   const l = ledger;
   if (!l || $("#ledDash").hidden) return;
@@ -1144,10 +1260,12 @@ function drawLedTrend() {
     slide(host, key);
   };
   pill($("#ledMetric"), "ledMetric", LED_TREND, ledMetric, (id) => { ledMetric = id; try { localStorage.setItem("magpie.ledMetric", id); } catch {} drawLedTrend(); });
+  ledStyle($("#ledStyle"));
   const keyed = (l.callerKeys || []).length > 0;
   if (ledSplit === "callerKey" && !keyed) ledSplit = "model";
   pill($("#ledSplit"), "ledSplit", LED_SPLITS.filter(([id]) => id !== "callerKey" || keyed), ledSplit, (id) => { ledSplit = id; drawLedTrend(); });
   const chart = $("#ledChart"), rank = $("#ledRank");
+  chart.drawn = ledLine ? ledLines : null;
   drawLedColumns(chart, l, ledSplit, ledMetric, false, (day) => {
     ledDay = ledDay === day ? "" : day;
     ledLent.add("day");
@@ -1883,6 +2001,93 @@ function renderLedger() {
 // The agents' own sessions, read from their session files: what each cost,
 // and the command that picks it up again. A segment of the Usage page.
 
+// A session's row and details, as this list and the Sessions page's
+// (plugins/sessions/client.js) both draw them.
+
+// sessModelNames lists models for a cost note, one an agent recorded no
+// name for told as such: joined bare, the note read "Not counted: , with
+// no known price" (tony, Discord)
+const sessModelNames = (models) => [...new Set(models.map((m) => m || t("a model with no name")))].join(", ");
+
+// wslBadge marks a session an agent ran in a WSL distro, read through
+// \\wsl.localhost; its resume command runs it there through wsl.exe
+function wslBadge(s) {
+  const b = el("span", "badge wsl", "WSL " + s.wsl);
+  b.title = t("In WSL {distro}: resumed there through wsl.exe", { distro: s.wsl });
+  return b;
+}
+
+// sessModelsText: a session's models, the first two and how many more, and
+// where magpie's gateway sent its calls, the most first: a routing group's
+// member and the reasoning it was asked for
+function sessModelsText(s) {
+  const via = s.via?.length ? "→ " + [s.via[0].model, s.via[0].effort].filter(Boolean).join(" · ") + (s.via.length > 1 ? " +" + (s.via.length - 1) : "") : "";
+  return sessModelNames(s.models.slice(0, 2).map((m) => m.model)) + (s.models.length > 2 ? " +" + (s.models.length - 2) : "") + (via ? " " + via : "");
+}
+
+// sessUsageDetail adds to a session's details what it spent by model, and
+// what the gateway sent its calls to, at what reasoning; line(label, value)
+// adds a line of the details
+function sessUsageDetail(d, s, line) {
+  if (s.models?.length) {
+    const m = el("div", "sess-models");
+    for (const x of s.models) {
+      m.append(el("span", "model", x.model || t("a model with no name")),
+        el("span", "n", t("{a} in · {b} out", { a: fmtN(x.input), b: fmtN(x.output) }) + (x.cache_read ? " · " + t("{n} cached", { n: fmtN(x.cache_read) }) : "") + (x.cache_write ? " · " + t("{n} written", { n: fmtN(x.cache_write) }) : "")),
+        el("span", "c" + (x.priced ? "" : " none"), x.priced ? "≈" + fmtCost({ cost: x.cost }) : "—"));
+    }
+    d.append(m);
+  }
+  (s.via || []).forEach((v, i) => line(i ? "" : t("Routed"), viaText(v) + " · " + t("{n} tokens", { n: fmtN(v.tokens) }) + (v.credited ? " · " + ledCredits(v).textContent : "")));
+}
+
+// one place a session's calls went through magpie, in words
+function viaText(v) {
+  return `${v.provider}/${v.model}` + (v.effort ? " · " + v.effort : "") + " · " + t("{n} calls", { n: v.calls });
+}
+
+const ledExpanded = new WeakSet();
+const LED_KINDS = { tool_use: "Tool call", tool_result: "Tool result", thinking: "Thinking", context: "Context", image: "Image" };
+const LED_ROLES = { user: "You", assistant: "Assistant", tool: "Tool" };
+
+// one thing said: who said it, and its words in a box; long ones show a part and
+// unroll, and reasoning and what the agent put in itself are folded; model,
+// when given, is said muted after it (a session's reader names the model
+// of each reply, #2253)
+function ledSaid(p, model) {
+  const head = el("div", "cx-h");
+  head.append(el("span", "cx-role " + p.role, t(LED_KINDS[p.kind] || LED_ROLES[p.role] || p.role)));
+  if (p.name) head.append(el("code", "cx-name", p.name));
+  if (model) {
+    const m = el("span", "cx-model", model);
+    m.title = t("Model") + ": " + model;
+    head.append(m);
+  }
+  const words = el("pre", "cx-t", p.text);
+  if (p.cut) words.append(el("em", "cx-cut", "\n" + t("… {n} more characters not shown", { n: ledNum(p.cut) })));
+  if (p.kind === "thinking" || p.kind === "context") {
+    const d = el("details", "cx-part fold");
+    const sum = el("summary");
+    sum.append(head);
+    d.append(sum, words);
+    return d;
+  }
+  const part = el("div", "cx-part");
+  part.append(head, words);
+  if (p.text.length > 700 || p.text.split("\n").length > 9) {
+    part.classList.toggle("clamp", !ledExpanded.has(p));
+    const more = el("button", "text cx-more", t(ledExpanded.has(p) ? "Collapse content" : "Show full content"));
+    more.type = "button";
+    more.onclick = () => {
+      const clamped = part.classList.toggle("clamp");
+      if (clamped) ledExpanded.delete(p); else ledExpanded.add(p);
+      more.textContent = t(clamped ? "Show full content" : "Collapse content");
+    };
+    part.append(more);
+  }
+  return part;
+}
+
 const USAGE_TABS = [["usage", "Overview"], ["requests", "Requests"], ["sessions", "Sessions"], ["context", "Context"]];
 let usageTab = "usage";
 try { const k = localStorage.getItem("magpie.usageTab"); if (USAGE_TABS.some(([id]) => id === k)) usageTab = k; } catch {}
@@ -2393,7 +2598,7 @@ function renderSessions() {
     stats.classList.remove("six");
     stats.classList.add("empty");
     const filtered = sessAgent !== "all" || sessModel || sessFolder || q;
-    stats.append(el("div", "none", !all.length && !rows.length ? t("No sessions yet. Claude Code's, Codex's, OpenCode's and Pi's sessions on this computer show up here, with what each cost and the command that resumes it.") : filtered ? t("No session matches.") : t("Nothing in this range.")));
+    stats.append(el("div", "none", !all.length && !rows.length ? t("No sessions yet. Claude Code's, Codex's, Hermes, OpenCode's and Pi's sessions on this computer show up here, with what each cost and the command that resumes it.") : filtered ? t("No session matches.") : t("Nothing in this range.")));
     if (from && all.some((s) => byAgent(s) && byFolder(s) &&
       (!sessModel || s.models.some((m) => m.model === sessModel)) &&
       (!q || [s.title, s.cwd, s.id, s.name, ...s.models.map((m) => m.model)].some((x) => (x || "").toLowerCase().includes(q))))) {

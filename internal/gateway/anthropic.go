@@ -997,9 +997,20 @@ func anthropicBody(r *Request, model, host string, replay bool) []byte {
 		// auto mode's review, which Claude alone does (automode.go)
 		out["safeguards"] = r.Safeguards
 	}
-	if len(r.Tools) > 0 || r.WebSearch {
+	// a history of calls with no tools to go with it, which Anthropic
+	// turns away ("must define tools", undeclared_tools.go): each tool
+	// it called is declared, and none of them may be called
+	rTools := r.Tools
+	stubbed := false
+	if len(rTools) == 0 && !r.WebSearch {
+		for _, n := range historyCallNames(r) {
+			rTools = append(rTools, Tool{Name: n, Description: stubToolDescription})
+			stubbed = true
+		}
+	}
+	if len(rTools) > 0 || r.WebSearch {
 		var tools []map[string]any
-		for _, t := range r.Tools {
+		for _, t := range rTools {
 			schema := t.Schema
 			if len(schema) == 0 {
 				schema = json.RawMessage(`{"type":"object","properties":{}}`)
@@ -1017,14 +1028,14 @@ func anthropicBody(r *Request, model, host string, replay bool) []byte {
 		out["tools"] = tools
 		var tc map[string]any
 		switch {
+		case stubbed || r.ToolChoice == "none":
+			tc = map[string]any{"type": "none"}
 		case r.ToolChoice == "auto" || r.ToolChoice == "":
 			if r.Parallel != nil && !*r.Parallel {
 				tc = map[string]any{"type": "auto"}
 			}
 		case r.ToolChoice == "required":
 			tc = map[string]any{"type": "any"}
-		case r.ToolChoice == "none":
-			tc = map[string]any{"type": "none"}
 		case strings.HasPrefix(r.ToolChoice, "name:"):
 			tc = map[string]any{"type": "tool", "name": strings.TrimPrefix(r.ToolChoice, "name:")}
 		}
@@ -1299,6 +1310,11 @@ type aUsage struct {
 	// which Anthropic bills apart: 1.25× input for 5 minutes, 2× for an
 	// hour
 	CacheCreation *aCacheCreation `json:"cache_creation,omitempty"`
+	// CacheUnknown: a plugin's usage saying its vendor gave no cache
+	// counts (magpie_cache_unknown), so the zero above is not a miss:
+	// Kiro caches but tells only credits, never tokens (zeewell on X).
+	// It is read, never told: anthropic() leaves it false.
+	CacheUnknown bool `json:"magpie_cache_unknown,omitempty"`
 }
 
 type aCacheCreation struct {
@@ -1307,7 +1323,7 @@ type aCacheCreation struct {
 }
 
 func (u aUsage) usage() Usage {
-	out := Usage{Input: u.InputTokens, Output: u.OutputTokens, CacheRead: u.CacheReadInputTokens, CacheWrite: u.CacheCreationInputTokens}
+	out := Usage{Input: u.InputTokens, Output: u.OutputTokens, CacheRead: u.CacheReadInputTokens, CacheWrite: u.CacheCreationInputTokens, cacheUnknown: u.CacheUnknown}
 	if c := u.CacheCreation; c != nil {
 		out.cacheCreationReported = true
 		out.cacheCreationHasCounts = c.Ephemeral5m+c.Ephemeral1h > 0
@@ -1371,6 +1387,11 @@ type anthropicEncoder struct {
 	fresh   bool
 	started bool
 	col     collector
+	// cite cuts the text said after a search into lines, each naming a
+	// page found its own block with citations (search_cite.go); cited:
+	// the open text block is such a line's
+	cite  citer
+	cited bool
 }
 
 // anthropicID is a reply's id as Anthropic's API gives one, msg_…: an
@@ -1487,9 +1508,40 @@ func (e *anthropicEncoder) delta(d map[string]any) {
 	e.w.event("content_block_delta", map[string]any{"type": "content_block_delta", "index": e.index, "delta": d})
 }
 
+// sayCited says a line of text after a search (citer): a line that cites
+// a page is a text block of its own, its citations first, as Anthropic's
+// stream gives them (citations_delta); one that cites none goes on in the
+// open text block unless that block cites; the whitespace left at the end
+// (tail) goes on whatever text block is open.
+func (e *anthropicEncoder) sayCited(text string, cites []map[string]any, tail bool) {
+	switch {
+	case len(cites) > 0:
+		e.close()
+		e.openBlock(Text, map[string]any{"text": ""})
+		e.cited = true
+		for _, c := range cites {
+			e.delta(map[string]any{"type": "citations_delta", "citation": c})
+		}
+	case tail && e.open == Text:
+	default:
+		if e.cited {
+			e.close()
+		}
+		e.openBlock(Text, map[string]any{"text": ""})
+		e.cited = false
+	}
+	e.delta(map[string]any{"type": "text_delta", "text": text})
+}
+
 func (e *anthropicEncoder) event(ev Event) {
 	if ev.Kind != KStart && !e.started {
 		e.start(Event{})
+	}
+	switch ev.Kind {
+	case KText, KUsage, KStart, KTextSig, KStop, KAlive:
+	default:
+		// anything else ends the text: its last line is said
+		e.cite.flush(e.sayCited)
 	}
 	switch ev.Kind {
 	case KStart:
@@ -1497,6 +1549,10 @@ func (e *anthropicEncoder) event(ev Event) {
 	case KText:
 		if ev.Text == "" {
 			return
+		}
+		if e.cite.on() {
+			e.cite.feed(ev.Text, e.sayCited)
+			break
 		}
 		e.openBlock(Text, map[string]any{"text": ""})
 		e.delta(map[string]any{"type": "text_delta", "text": ev.Text})
@@ -1550,6 +1606,7 @@ func (e *anthropicEncoder) event(ev Event) {
 		e.index++
 		e.w.event("content_block_start", map[string]any{"type": "content_block_start", "index": e.index,
 			"content_block": searchResultBlock(id, ev.Hits)})
+		e.cite.hits = append(e.cite.hits, ev.Hits...)
 		e.w.event("content_block_stop", map[string]any{"type": "content_block_stop", "index": e.index})
 		e.index++
 	case KError:
@@ -1579,6 +1636,7 @@ func (e *anthropicEncoder) finish() {
 	if !e.started {
 		e.start(Event{})
 	}
+	e.cite.flush(e.sayCited)
 	e.close()
 	res := e.col.finish()
 	delta := map[string]any{"stop_reason": stopToAnthropic(res.Stop), "stop_sequence": nil}
@@ -1597,11 +1655,16 @@ func (e *anthropicEncoder) finish() {
 // renderAnthropic is the non-streaming reply.
 func renderAnthropic(res Result, model string) []byte {
 	content := []any{}
+	var cite citer
 	for _, p := range res.Parts {
 		switch p.Kind {
 		case Text:
 			if p.Text == "" && p.Signature != "" {
 				continue // only Gemini's signature, which is Gemini's
+			}
+			if cite.on() {
+				content = append(content, citedBlocks(&cite, p.Text)...)
+				continue
 			}
 			content = append(content, map[string]any{"type": "text", "text": p.Text})
 		case Thinking:
@@ -1624,6 +1687,7 @@ func renderAnthropic(res Result, model string) []byte {
 			content = append(content,
 				map[string]any{"type": "server_tool_use", "id": id, "name": "web_search", "input": map[string]any{"query": p.Text}},
 				searchResultBlock(id, p.Hits))
+			cite.hits = append(cite.hits, p.Hits...)
 		}
 	}
 	id := anthropicID(res.ID)
@@ -1640,6 +1704,32 @@ func renderAnthropic(res Result, model string) []byte {
 	}
 	b, _ := json.Marshal(reply)
 	return b
+}
+
+// citedBlocks are the text blocks of text said after a search, as the
+// stream's sayCited makes them.
+func citedBlocks(c *citer, text string) []any {
+	var blocks []any
+	var open map[string]any // the last text block, while it may go on
+	cited := false
+	say := func(t string, cites []map[string]any, tail bool) {
+		switch {
+		case len(cites) > 0:
+			open = map[string]any{"type": "text", "text": t, "citations": cites}
+			blocks = append(blocks, open)
+			cited = true
+			return
+		case tail && open != nil, open != nil && !cited:
+			open["text"] = open["text"].(string) + t
+			return
+		}
+		open = map[string]any{"type": "text", "text": t}
+		blocks = append(blocks, open)
+		cited = false
+	}
+	c.feed(text, say)
+	c.flush(say)
+	return blocks
 }
 
 // searchResultBlock is a web_search_tool_result block of the pages a

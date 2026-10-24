@@ -176,6 +176,10 @@ export const FakePlugin = async ({ client }) => ({
         h.set("authorization", "Bearer " + (a.type === "oauth" ? a.access : a.key))
         h.set("x-models", Object.keys(provider.models).sort().join(","))
         h.set("x-body-type", typeof init.body)
+        // $FAKE_RUN: the test this host runs for, so its vendor tells its
+        // own requests from a stray that reached a port the kernel handed
+        // on (testenv.FakeVendor)
+        if (process.env.FAKE_RUN) h.set("x-fake-run", process.env.FAKE_RUN)
         // where magpie said the agent works, as the plugin read it; its own
         // headers go on too, as a plugin that sends on what it got sends
         // them, for the host to take off
@@ -210,6 +214,14 @@ export const FakePlugin = async ({ client }) => ({
       }
       if (a.refresh === "r-kept") return { error: "sign in again to see usage", signIn: "kept" }
       if (a.refresh === "r-renewed") return { error: "usage is down", signIn: "renewed" }
+      // $FAKE_WINDOWS: a JSON file of each account's windows, read at
+      // each reading, as a vendor's usage page says them now (Factory's
+      // plugin with Standard usage only, plugins#349)
+      if (process.env.FAKE_WINDOWS) {
+        const fs = await import("node:fs")
+        const ws = JSON.parse(fs.readFileSync(process.env.FAKE_WINDOWS, "utf8"))[a.accountId]
+        if (ws) return { plan: "Fake Pro", windows: ws }
+      }
       const full = a.accountId === "full@fake"
       return {
         plan: "Fake Pro",

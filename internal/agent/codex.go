@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -519,6 +520,34 @@ func codexIn(at place) *Agent {
 		}
 		dropList()
 		return nil
+	}
+	// bringBack moves the threads started while magpie was Codex's
+	// provider (model_provider "magpie") onto the provider Codex is on now,
+	// once it is off magpie: Codex lists only the threads of its current
+	// provider (app-server thread/list, the TUI's resume picker), so after
+	// a Disconnect, a hand edit, or magpie stepping back beside the
+	// ChatGPT sign-in, every thread started on magpie was gone from Codex
+	// (kaizaoji on X). Only magpie's own threads move, never those of a
+	// provider of the user's (CC Switch's, #887); none while a profile
+	// still names magpie, whose threads they are; and a copy of each is
+	// kept in magpie's trash (MoveCodexProvider). A thread Codex wrote to
+	// in the last minute waits for the next Sync. This machine's Codex
+	// only: a distro's state database isn't magpie's to open.
+	bringBack := func() {
+		if at.spell != nil || namesMagpie() {
+			return
+		}
+		to := sessions.CodexProviderIn(dir)
+		if to == magpieID {
+			return
+		}
+		moved, err := sessions.MoveCodexThreads(dir, magpieID, to)
+		if len(moved) > 0 {
+			log.Printf("codex: %d thread(s) started on magpie moved to %s, where Codex lists them", len(moved), to)
+		}
+		if err != nil {
+			log.Println("codex: moving magpie's threads:", err)
+		}
 	}
 	// mirrorsTaken are the mirrors takeMirrors pointed at magpie (#1796)
 	mirrorsTaken := func() []string {
@@ -1162,6 +1191,8 @@ func codexIn(at place) *Agent {
 			if at.spell == nil {
 				portCodexHome(dir, codexPortUnwire)
 			}
+			// and are listed where Codex now is
+			bringBack()
 			return settle()
 		},
 		// signed in with ChatGPT, Codex reaches magpie by the base URL with
@@ -1212,6 +1243,7 @@ func codexIn(at place) *Agent {
 		// Agents row said "its own models stay in /model" while the Codex
 		// app was meant to be in its API state (#2267)
 		Joined:      func() bool { return joined() && !asProvider() },
+		AppOut:      func() bool { return asProvider() && !api() && chatGPT() && stashLoad()[at.key("codex.out")] == "1" },
 		Beside:      beside,
 		Routed:      routed,
 		FailingOver: failingOver,
@@ -1223,6 +1255,9 @@ func codexIn(at place) *Agent {
 		},
 		OwnVia: codexOwnViaMagpie,
 		Sync: func() error {
+			// after the sync, which may have put Codex back beside its
+			// sign-in, and whatever it failed at
+			defer bringBack()
 			// model_catalog_json naming magpie's list with the list gone,
 			// as an older magpie's Disconnect could leave it (zwaydot on
 			// X): Codex loads no config at all then. Connected or not, the
@@ -1263,6 +1298,45 @@ func codexIn(at place) *Agent {
 			// API key: its picker never had magpie's models (#322)
 			if m := get("model"); isMagpie(m) && viaBase() && get("model_provider") == "" && !chatGPT() {
 				return set(m)
+			}
+			// the ChatGPT account ran out on one of Codex's own models,
+			// joined beside the sign-in (MasterYi on Discord: the Codex
+			// app greyed Send, a magpie model's turn too), as in #540
+			// below: magpie becomes Codex's provider on that model as
+			// magpie serves it, the one picked kept (codex.out_own) to go
+			// back to once the account has room. One magpie serves on no
+			// account of its own is left as it is.
+			if m := get("model"); !isMagpie(m) && !api() && chatGPT() && joined() && out() {
+				if id := codexOwnViaMagpie(m); id != "" {
+					stash(map[string]string{at.key("codex.out_own"): m})
+					return set(id)
+				}
+			}
+			// put back before #540's way back, which would take
+			// codex/<model> for a magpie model picked beside the sign-in
+			if own := stashLoad()[at.key("codex.out_own")]; own != "" {
+				m := get("model")
+				switch {
+				case stashLoad()[at.key("codex.out")] != "1" || !asProvider() || codexOwnOf(m) != own:
+					// moved since (another model picked, magpie API, a
+					// disconnect): that stands
+					forget(at.key("codex.out_own"))
+				case !out():
+					// back beside the sign-in on the one picked, as Join
+					// leaves it: Codex's own sign-in, magpie's models joined
+					forget(at.key("codex.out_own"), at.key("codex.out"))
+					if err := edit.DelTOMLTop(path, "model_provider", "model_catalog_json"); err != nil {
+						return err
+					}
+					if err := edit.SetTOMLTop(path,
+						edit.KV{Path: "openai_base_url", Value: at.codexURL()},
+						edit.KV{Path: "model", Value: own},
+					); err != nil {
+						return err
+					}
+					stash(map[string]string{at.key("codex.joined"): "1"})
+					return settle()
+				}
 			}
 			// the ChatGPT account ran out (of its allowance and its
 			// credits) after a magpie model was picked beside its sign-in:
