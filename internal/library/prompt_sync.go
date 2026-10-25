@@ -22,9 +22,10 @@ func promptHash(b []byte) string { return fmt.Sprintf("%x", sha256.Sum256(b)) }
 
 func (l *Library) syncPrompts(b *backups, res *Result) {
 	all := promptTargets()
+	enabled := l.promptsEnabled()
 	for _, t := range all {
 		for _, p := range l.Prompts {
-			if !slices.Contains(p.Agents, t.ID) || !t.Detected {
+			if !enabled || !slices.Contains(p.Agents, t.ID) || !t.Detected {
 				continue
 			}
 			body, err := os.ReadFile(promptPath(p.ID))
@@ -128,14 +129,14 @@ func (l *Library) syncPrompts(b *backups, res *Result) {
 				continue
 			}
 			var desired map[string][]byte
-			if p := l.prompt(pid); p != nil && (id == "codex" || id == "codex-desktop") && (slices.Contains(p.Agents, "codex") || slices.Contains(p.Agents, "codex-desktop")) {
+			if p := l.prompt(pid); enabled && p != nil && (id == "codex" || id == "codex-desktop") && (slices.Contains(p.Agents, "codex") || slices.Contains(p.Agents, "codex-desktop")) {
 				// Without the body we cannot prove which shared files are still
 				// needed. Keep the existing ownership, not just the file itself.
 				if _, err := os.ReadFile(promptPath(pid)); err != nil {
 					continue
 				}
 			}
-			if p := l.prompt(pid); p != nil && slices.Contains(p.Agents, id) {
+			if p := l.prompt(pid); enabled && p != nil && slices.Contains(p.Agents, id) {
 				// An unknown source or unsupported target never means remove.
 				body, err := os.ReadFile(promptPath(pid))
 				if err == nil {
@@ -156,11 +157,29 @@ func (l *Library) syncPrompts(b *backups, res *Result) {
 					continue
 				}
 			}
+			if id == "codex" || id == "codex-desktop" {
+				// Body and invocation policy form one deployment, including
+				// ownership split across legacy CLI/Desktop records. Never
+				// retire half of an externally edited skill.
+				if edited, err := l.promptCodexRetirementCheck(pid); err != nil {
+					res.fail(id, "prompt:"+pid, err)
+					if edited && l.prompt(pid) == nil {
+						// Deletion releases the retained skill to the user. Drop
+						// both legacy records together so neither half is retired.
+						for _, target := range []string{"codex", "codex-desktop"} {
+							if applied := l.Applied[target]; applied != nil {
+								delete(applied.Prompts, pid)
+							}
+						}
+					}
+					continue
+				}
+			}
 			for path, hash := range old.Files {
 				if slices.ContainsFunc(slices.Collect(maps.Keys(desired)), func(want string) bool { return promptSamePath(path, want) }) {
 					continue
 				}
-				if l.promptSharedPathNeeded(all, id, pid, path, hash) {
+				if enabled && l.promptSharedPathNeeded(all, id, pid, path, hash) {
 					delete(old.Files, path)
 					continue
 				}
@@ -194,6 +213,28 @@ func (l *Library) syncPrompts(b *backups, res *Result) {
 			}
 		}
 	}
+}
+
+func (l *Library) promptCodexRetirementCheck(pid string) (bool, error) {
+	for _, id := range []string{"codex", "codex-desktop"} {
+		a := l.Applied[id]
+		if a == nil || a.Prompts[pid] == nil {
+			continue
+		}
+		for path, hash := range a.Prompts[pid].Files {
+			cur, err := os.ReadFile(path)
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				return false, err
+			}
+			if promptHash(cur) != hash {
+				return true, fmt.Errorf("externally edited template kept with its invocation policy: %s", path)
+			}
+		}
+	}
+	return false, nil
 }
 
 // A shared deployment is retired only after its last selected consumer stops

@@ -111,6 +111,10 @@ func (l *Library) promptState(t PromptTarget, p *Prompt, text string) PromptStat
 			return s
 		}
 	}
+	if !l.promptsEnabled() {
+		s.Status, s.Reason = "disabled", "Prompt templates are turned off"
+		return s
+	}
 	source, warnings, err := l.promptConflictWarnings(t, p)
 	if err != nil {
 		s.Status, s.Reason, s.Source = "unverified", "Could not check command sources", err.Error()
@@ -181,7 +185,7 @@ func (l *Library) promptConflictWarnings(t PromptTarget, p *Prompt) (string, []s
 	}
 	if t.ID == "codex" || t.ID == "dsh" {
 		hit, notices, err := l.nativePromptConflict(t, p)
-		if err != nil || hit != "" {
+		if err != nil || hit != "" || t.ID == "codex" {
 			return hit, nil, err
 		}
 		warnings = notices

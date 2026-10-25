@@ -37,7 +37,7 @@ func rewriteLibraryWithoutPrompts(t *testing.T) {
 }
 
 func TestPromptTemplateSurvivesLegacyLibraryRewrite(t *testing.T) {
-	h := sandbox(t)
+	h := promptEnabledSandbox(t)
 	ok(t)(SavePrompt(PromptChange{Name: "review-code", Text: "Keep my template.", Agents: []string{"claude"}}))
 	rewriteLibraryWithoutPrompts(t)
 	v, err := ReadPrompts()
@@ -81,7 +81,7 @@ func TestPromptTemplateRejectsIncompleteOwnershipIndex(t *testing.T) {
 }
 
 func TestPromptTemplateSyncBacksUpOwnershipIndex(t *testing.T) {
-	h := sandbox(t)
+	h := promptEnabledSandbox(t)
 	ok(t)(SavePrompt(PromptChange{Name: "review-login", Text: "Check.", Agents: []string{"claude"}}))
 	rewriteLibraryWithoutPrompts(t)
 	write(t, filepath.Join(h, ".claude/skills/review-login/SKILL.md"), "---\nname: review-login\ndescription: User skill\n---\nUser text")
@@ -98,7 +98,7 @@ func TestPromptTemplateSyncBacksUpOwnershipIndex(t *testing.T) {
 }
 
 func TestPromptTemplateOtherChangeBacksUpOwnershipIndex(t *testing.T) {
-	h := sandbox(t)
+	h := promptEnabledSandbox(t)
 	ok(t)(SavePrompt(PromptChange{Name: "review-login", Text: "Check.", Agents: []string{"claude"}}))
 	write(t, filepath.Join(h, ".claude/skills/review-login/SKILL.md"), "---\nname: review-login\ndescription: User skill\n---\nUser text")
 	// Server changes also sync the Library. A newly conflicting template's

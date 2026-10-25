@@ -11,7 +11,7 @@ func TestPromptTemplateCodexModelCatalogChangesInvalidateNativeEvidence(t *testi
 	for _, reference := range []string{"relative", "absolute"} {
 		for _, change := range []string{"content", "deleted"} {
 			t.Run(reference+"/"+change, func(t *testing.T) {
-				h, _ := promptCodexFixture(t)
+				h, _ := promptEnabledCodexFixture(t)
 				catalog := filepath.Join(h, ".codex/catalogs/models.json")
 				value := "catalogs/models.json"
 				if reference == "absolute" {

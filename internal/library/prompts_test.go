@@ -80,7 +80,7 @@ func TestPromptTemplateAgentUpdateProtectsLatestTemplateAndTargets(t *testing.T)
 }
 
 func TestPromptTemplateAgentUpdateDoesNotStartPiAndRetainsExpiredSelection(t *testing.T) {
-	h, log := promptPiFixture(t)
+	h, log := promptEnabledPiFixture(t)
 	ok(t)(SavePrompt(PromptChange{Name: "audit-login", Text: "Body", Agents: []string{}}))
 	v, _ := ReadPrompts()
 	id := v.Items[0].ID
@@ -221,7 +221,7 @@ func TestPromptTemplateBuiltinAndSkillConflictsArePerTarget(t *testing.T) {
 }
 
 func TestPromptTemplateNormalSyncAndMissingBody(t *testing.T) {
-	h := sandbox(t)
+	h := promptEnabledSandbox(t)
 	ok(t)(SavePrompt(PromptChange{Name: "review-code", Text: "first", Agents: []string{"claude"}}))
 	v, err := ReadPrompts()
 	if err != nil {
@@ -250,7 +250,7 @@ func TestPromptTemplateNormalSyncAndMissingBody(t *testing.T) {
 }
 
 func TestPromptTemplateCodexDesktopIsExplicitAndNotAnImportableSkill(t *testing.T) {
-	promptCodexFixture(t)
+	promptEnabledCodexFixture(t)
 	if _, err := CheckPrompt(PromptChange{Name: "review-login"}); err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +356,7 @@ func TestPromptTemplateSnapshotKeepsCleanInstructions(t *testing.T) {
 }
 
 func TestPromptTemplateNamesAndProjectConflicts(t *testing.T) {
-	h := sandbox(t)
+	h := promptEnabledSandbox(t)
 	for _, name := range []string{"", "a/b", "a b", "a\u200bb", "../a", "审查", "Review", "with_underscore", "-review", "review-", "review--code", "Ｒｅｖｉｅｗ", strings.Repeat("a", 61)} {
 		if _, err := SavePrompt(PromptChange{Name: name, Text: "body", Agents: []string{}}); err == nil {
 			t.Fatalf("accepted invalid name %q", name)
@@ -499,7 +499,7 @@ func TestPromptTemplateRejectsInvalidTargetBeforeWriting(t *testing.T) {
 }
 
 func TestPromptTemplateDoesNotClobberConcurrentUserCommand(t *testing.T) {
-	h := sandbox(t)
+	h := promptEnabledSandbox(t)
 	path := filepath.Join(h, ".claude/commands/audit-login.md")
 	var result *Result
 	err := edit.Filtered(func(p string, b []byte) []byte {
@@ -534,7 +534,7 @@ func TestPromptTemplateAdaptersAreLimitedToInstalledHarnesses(t *testing.T) {
 }
 
 func TestPromptTemplateUnknownDynamicCommandsBlockOnlyThatTarget(t *testing.T) {
-	h := sandbox(t)
+	h := promptEnabledSandbox(t)
 	write(t, filepath.Join(h, ".pi/agent/settings.json"), `{"extensions":["./custom.ts"]}`)
 	res, err := SavePrompt(PromptChange{Name: "audit-login", Text: "Template", Agents: []string{"claude", "pi"}})
 	if err != nil {
@@ -579,7 +579,7 @@ func TestPromptTemplateCorruptMetadataDoesNotReadOutsideLibrary(t *testing.T) {
 }
 
 func TestPromptTemplateProtectsSkillFolderAlias(t *testing.T) {
-	h := sandbox(t)
+	h := promptEnabledSandbox(t)
 	write(t, filepath.Join(h, ".claude/skills/folder-alias/SKILL.md"), "---\nname: metadata-name\ndescription: User skill\n---\nUser instructions")
 	res, err := SavePrompt(PromptChange{Name: "folder-alias", Text: "Template", Agents: []string{"claude"}})
 	if err != nil {
@@ -591,7 +591,7 @@ func TestPromptTemplateProtectsSkillFolderAlias(t *testing.T) {
 }
 
 func TestPromptTemplatePiUsesActualSkillNamespaceAndExplicitPromptFiles(t *testing.T) {
-	h, _ := promptPiFixture(t)
+	h, _ := promptEnabledPiFixture(t)
 	write(t, filepath.Join(h, ".pi/agent/skills/audit-login/SKILL.md"), "---\nname: audit-login\ndescription: User skill\n---\nInstructions")
 	if s := piPromptState(t, PromptChange{Name: "audit-login"}); s.Status != "available" {
 		t.Fatal(s)
@@ -611,7 +611,7 @@ func TestPromptTemplatePiUsesActualSkillNamespaceAndExplicitPromptFiles(t *testi
 }
 
 func TestPromptTemplateSyncBacksUpEveryDesktopSkill(t *testing.T) {
-	promptCodexFixture(t)
+	promptEnabledCodexFixture(t)
 	if _, err := CheckPrompt(PromptChange{Name: "audit-one"}); err != nil {
 		t.Fatal(err)
 	}
@@ -678,7 +678,7 @@ func TestPromptTemplateCaseOnlyRenameKeepsTheNewCommand(t *testing.T) {
 }
 
 func TestPromptTemplateInvalidUTF8BodyIsNotDeployedOrCarried(t *testing.T) {
-	h := sandbox(t)
+	h := promptEnabledSandbox(t)
 	ok(t)(SavePrompt(PromptChange{Name: "audit-login", Text: "Original template", Agents: []string{"claude"}}))
 	v, _ := ReadPrompts()
 	if err := os.WriteFile(promptPath(v.Items[0].ID), []byte{0xff}, 0o600); err != nil {
@@ -697,7 +697,7 @@ func TestPromptTemplateInvalidUTF8BodyIsNotDeployedOrCarried(t *testing.T) {
 }
 
 func TestPromptTemplateRemovalReleasesEditedDesktopSkill(t *testing.T) {
-	promptCodexFixture(t)
+	promptEnabledCodexFixture(t)
 	if _, err := CheckPrompt(PromptChange{Name: "audit-login"}); err != nil {
 		t.Fatal(err)
 	}

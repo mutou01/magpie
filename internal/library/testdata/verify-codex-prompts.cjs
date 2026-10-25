@@ -77,12 +77,14 @@ async function main() {
         }
         assert(cookie, "Isolated magpie web must issue its authentication cookie");
         const api = async (action, body) => {
-          const response = await fetch(url + "/api/library/prompts/" + action, { method: "POST", headers: { Cookie: cookie, Origin: url, "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(40000) });
+          const response = await fetch(url + "/api/library/prompts" + (action ? "/" + action : ""), { method: body ? "POST" : "GET", headers: { Cookie: cookie, Origin: url, "Content-Type": "application/json" }, body: body && JSON.stringify(body), signal: AbortSignal.timeout(40000) });
           assert.equal(response.status, 200, "Public prompt API must succeed");
           return response.json();
         };
         const codex = states => states.find(s => s.agent === "codex");
-        assert.equal(codex(await api("check", { name: "magpie-policy-probe", passive: true })).status, "unverified");
+        assert.equal((await api("")).enabled, false, "An empty library starts with prompt templates off");
+        assert.equal(codex(await api("check", { name: "magpie-policy-probe", passive: true })).status, "disabled");
+        assert.equal((await api("enabled", { enabled: true })).prompts.enabled, true, "Explicitly enable templates before native verification");
         const checked = codex(await api("check", { name: "magpie-policy-probe" }));
         assert.equal(checked.status, "available");
         assert.equal(checked.reason, "Codex ignored unrelated configuration or skill metadata; this template is unaffected");
@@ -91,7 +93,7 @@ async function main() {
         assert(item, "Public Save must return the new template");
         assert.equal(codex(item.states).status, "enabled");
         assert((await fs.readFile(path.join(skill, "SKILL.md"), "utf8")).includes(body), "Invoke the exact public Save artifact");
-        publicAPI = "Check -> Save -> original CLI invocation of the same artifact";
+        publicAPI = "disabled read/passive check -> Enable -> Check -> Save -> original CLI invocation of the same artifact";
       } finally { web.kill(); await webExit; }
     } else {
       await fs.mkdir(path.join(skill, "agents"), { recursive: true });

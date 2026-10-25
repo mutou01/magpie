@@ -58,7 +58,7 @@ func TestPromptTemplateOriginalCodexConfiguredWarningsPreserveAvailability(t *te
 	if runtime.GOOS != "windows" || bin == "" {
 		t.Skip("opt-in original Codex with an isolated warning fixture")
 	}
-	h, _ := promptCodexFixture(t)
+	h, _ := promptEnabledCodexFixture(t)
 	dir := filepath.Join(h, ".codex")
 	write(t, filepath.Join(dir, "config.toml"), "disable_response_storage = true\n")
 	foreign := filepath.Join(h, ".agents/skills/foreign-warning")
@@ -582,7 +582,7 @@ func promptCodexFixture(t *testing.T) (string, string) {
 func TestPromptTemplateCodexStatusNotificationDoesNotBlockAvailability(t *testing.T) {
 	for _, mode := range []string{"remote-status", "remote-status-request", "remote-status-null-id", "remote-status-malformed", "changed", "unknown", "unknown-response", "approval", "metadata-warning", "config-warning", "missing-errors"} {
 		t.Run(mode, func(t *testing.T) {
-			h, _ := promptCodexFixture(t)
+			h, _ := promptEnabledCodexFixture(t)
 			write(t, filepath.Join(h, "codex-mode"), mode)
 			states, err := CheckPrompt(PromptChange{Name: "audit-code"})
 			if err != nil {
@@ -613,7 +613,7 @@ func TestPromptTemplateCodexStatusNotificationDoesNotBlockAvailability(t *testin
 }
 
 func TestPromptTemplateCodexNativeInventoryAndSharedOwnership(t *testing.T) {
-	h, log := promptCodexFixture(t)
+	h, log := promptEnabledCodexFixture(t)
 	v, err := ReadPrompts()
 	if err != nil {
 		t.Fatal(err)
@@ -669,7 +669,7 @@ func TestPromptTemplateCodexNativeInventoryAndSharedOwnership(t *testing.T) {
 }
 
 func TestPromptTemplateCodexUsesOneLibraryTarget(t *testing.T) {
-	_, log := promptCodexFixture(t)
+	_, log := promptEnabledCodexFixture(t)
 	v, err := ReadPrompts()
 	if err != nil {
 		t.Fatal(err)
@@ -722,7 +722,7 @@ func TestPromptTemplateCodexUsesOneLibraryTarget(t *testing.T) {
 func TestPromptTemplateCodexMergesStoredDesktopDeployment(t *testing.T) {
 	for _, edited := range []bool{false, true} {
 		t.Run(fmt.Sprintf("external-edit-%t", edited), func(t *testing.T) {
-			_, log := promptCodexFixture(t)
+			_, log := promptEnabledCodexFixture(t)
 			ok(t)(SavePrompt(PromptChange{Name: "legacy-codex", Text: "Body", Agents: []string{}}))
 			v, _ := ReadPrompts()
 			p := &Prompt{ID: v.Items[0].ID, Name: "legacy-codex", Agents: []string{"codex-desktop", "codex"}}
@@ -784,7 +784,7 @@ func TestPromptTemplateCodexMergesStoredDesktopDeployment(t *testing.T) {
 }
 
 func TestPromptTemplateCodexUsesAgentDetectionWithoutBypassingVerification(t *testing.T) {
-	h, log := promptCodexFixture(t)
+	h, log := promptEnabledCodexFixture(t)
 	if _, err := CheckPrompt(PromptChange{Name: "retained-codex"}); err != nil {
 		t.Fatal(err)
 	}
@@ -860,7 +860,7 @@ func TestPromptTemplateCodexUsesAgentDetectionWithoutBypassingVerification(t *te
 }
 
 func TestPromptTemplateCodexLegacySetupMatchesMergedSelection(t *testing.T) {
-	_, _ = promptCodexFixture(t)
+	_, _ = promptEnabledCodexFixture(t)
 	if _, err := CheckPrompt(PromptChange{Name: "setup-codex"}); err != nil {
 		t.Fatal(err)
 	}
@@ -903,7 +903,7 @@ func TestPromptTemplateDSHNativeNameAndExplicitOnlyPolicy(t *testing.T) {
 }
 
 func TestPromptTemplateCodexNativeIncompleteSourcesAndInvalidation(t *testing.T) {
-	h, log := promptCodexFixture(t)
+	h, log := promptEnabledCodexFixture(t)
 	state := func(passive bool) PromptState {
 		t.Helper()
 		states, err := CheckPrompt(PromptChange{Name: "audit-code", Passive: passive})
@@ -950,7 +950,7 @@ func TestPromptTemplateCodexNativeIncompleteSourcesAndInvalidation(t *testing.T)
 }
 
 func TestPromptTemplateCodexDirectoryLinksAndRetargeting(t *testing.T) {
-	h, log := promptCodexFixture(t)
+	h, log := promptEnabledCodexFixture(t)
 	state := func(passive bool) PromptState {
 		t.Helper()
 		states, err := CheckPrompt(PromptChange{Name: "audit-code", Passive: passive})
@@ -998,7 +998,7 @@ func TestPromptTemplateCodexDirectoryLinksAndRetargeting(t *testing.T) {
 }
 
 func TestPromptTemplateCodexBrokenRootLinkCannotHideSources(t *testing.T) {
-	h, _ := promptCodexFixture(t)
+	h, _ := promptEnabledCodexFixture(t)
 	parent := t.TempDir()
 	target := filepath.Join(parent, "installed")
 	write(t, filepath.Join(target, "asset.txt"), "Native installed asset\n")
@@ -1026,24 +1026,22 @@ func TestPromptTemplateCodexBrokenRootLinkCannotHideSources(t *testing.T) {
 	}
 }
 
-func TestPromptTemplateCodexResourceBudgetRemainsBounded(t *testing.T) {
-	h, log := promptCodexFixture(t)
+func TestPromptTemplateCodexUnrelatedLargeAssetDoesNotBlockNativeInventory(t *testing.T) {
+	h, log := promptEnabledCodexFixture(t)
 	path := filepath.Join(h, ".codex/plugins/oversized.bin")
 	write(t, path, "")
 	if err := os.Truncate(path, 1<<30+1); err != nil {
 		t.Fatal(err)
 	}
-	states, err := CheckPrompt(PromptChange{Name: "audit-code"})
+	states, err := CheckPrompt(PromptChange{Name: "audit-code", Target: "codex", Force: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range states {
-		if s.Agent == "codex" && (s.Status != "unverified" || s.Source != "command sources exceed 1 GiB") {
-			t.Fatalf("source budget was bypassed: %+v", s)
-		}
+	if len(states) != 1 || states[0].Agent != "codex" || states[0].Status != "available" {
+		t.Fatalf("an unrelated binary asset must not block native skill inventory: %+v", states)
 	}
-	if _, err := os.Stat(log); !os.IsNotExist(err) {
-		t.Fatal("oversized sources started native verification", err)
+	if got := strings.Fields(read(t, log)); len(got) != 1 || got[0] != "app-server" {
+		t.Fatalf("unrelated asset must permit exactly one native enumeration: %v", got)
 	}
 }
 
@@ -1117,7 +1115,7 @@ func TestPromptTemplatePiSourceBytesInvalidateEvidence(t *testing.T) {
 }
 
 func TestPromptTemplatePiNativeAbsoluteShimFindsOriginalCatalog(t *testing.T) {
-	h, _ := promptPiFixture(t)
+	h, _ := promptEnabledPiFixture(t)
 	target, _ := promptTargetByID(promptTargets(), "pi")
 	root := filepath.Join(target.dir, "install/releases/test/node_modules/@earendil-works/pi-coding-agent")
 	// Resolve the fixture release using its existing selector, then remove that
@@ -1138,7 +1136,7 @@ func TestPromptTemplatePiNativeAbsoluteShimFindsOriginalCatalog(t *testing.T) {
 }
 
 func TestPromptTemplateCodexLegacyOwnershipSurvivesUnverifiedHandoff(t *testing.T) {
-	h, _ := promptCodexFixture(t)
+	h, _ := promptEnabledCodexFixture(t)
 	if _, err := CheckPrompt(PromptChange{Name: "shared-audit"}); err != nil {
 		t.Fatal(err)
 	}
@@ -1200,7 +1198,7 @@ func TestPromptTemplatePiEvidenceCannotReviveAfterSourceRestored(t *testing.T) {
 }
 
 func TestPromptTemplateSharedUnreadableBodyKeepsOwnership(t *testing.T) {
-	h, _ := promptCodexFixture(t)
+	h, _ := promptEnabledCodexFixture(t)
 	if _, err := CheckPrompt(PromptChange{Name: "shared-body"}); err != nil {
 		t.Fatal(err)
 	}
@@ -1225,7 +1223,7 @@ func TestPromptTemplateSharedUnreadableBodyKeepsOwnership(t *testing.T) {
 }
 
 func TestPromptTemplateNativeSkillUsesRegisteredNameOnly(t *testing.T) {
-	h, _ := promptCodexFixture(t)
+	h, _ := promptEnabledCodexFixture(t)
 	l, _ := load()
 	root := filepath.Join(h, "native-skills")
 	write(t, filepath.Join(root, "folder-alias/SKILL.md"), "---\nname: actual-name\ndescription: fixture\n---\nBody")
@@ -1242,7 +1240,7 @@ func TestPromptTemplateNativeSkillUsesRegisteredNameOnly(t *testing.T) {
 }
 
 func TestPromptTemplateCodexSkillDoesNotInventProjectCommandNamespace(t *testing.T) {
-	h, _ := promptCodexFixture(t)
+	h, _ := promptEnabledCodexFixture(t)
 	l, _ := load()
 	project := filepath.Join(h, "project")
 	write(t, filepath.Join(project, ".codex/commands/audit-code.md"), "not a native Codex skill")
@@ -1256,7 +1254,7 @@ func TestPromptTemplateCodexSkillDoesNotInventProjectCommandNamespace(t *testing
 }
 
 func TestPromptTemplateCodexAuthorizationCannotCertifyInventory(t *testing.T) {
-	h, _ := promptCodexFixture(t)
+	h, _ := promptEnabledCodexFixture(t)
 	write(t, filepath.Join(h, "codex-mode"), "approval")
 	target, _ := promptTargetByID(promptTargets(), "codex")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1271,7 +1269,7 @@ func TestPromptTemplateCodexAuthorizationCannotCertifyInventory(t *testing.T) {
 }
 
 func TestPromptTemplateCodexNativeDisabledManagedSkillStaysBlocked(t *testing.T) {
-	h, _ := promptCodexFixture(t)
+	h, _ := promptEnabledCodexFixture(t)
 	if _, err := CheckPrompt(PromptChange{Name: "audit-code"}); err != nil {
 		t.Fatal(err)
 	}
@@ -1282,7 +1280,7 @@ func TestPromptTemplateCodexNativeDisabledManagedSkillStaysBlocked(t *testing.T)
 	before := read(t, path)
 	b, _ := json.Marshal([]map[string]any{{"name": "audit-code", "path": path, "enabled": false}})
 	write(t, filepath.Join(h, "codex-skills.json"), string(b))
-	states, err := CheckPrompt(PromptChange{ID: id, Name: "audit-code", Text: "Body"})
+	states, err := CheckPrompt(PromptChange{ID: id, Name: "audit-code", Text: "Body", Force: true})
 	if err != nil {
 		t.Fatal(err)
 	}

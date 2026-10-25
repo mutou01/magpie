@@ -56,6 +56,18 @@ index fails the operation instead of falling back to an empty library or stale
 ownership. Changed indexes use the existing atomic writer and join the change's
 normal file backup; unchanged indexes are not rewritten.
 
+The index's `enabled` switch controls deployment independently of saved target
+choices. Legacy indexes with templates default on; empty libraries default off.
+Reads infer that default without writing or starting a Harness. Turning off
+retires unchanged managed files and retains the templates and target choices.
+Externally edited files are kept and reported. Codex's body and explicit-only
+policy are retired as a group: an edit to either member keeps both, including
+ownership split across legacy CLI/Desktop records.
+Deleting the template keeps an externally edited Codex deployment as a group
+but releases both ownership records, making it an ordinary user skill again.
+Turning off or deselecting retains ownership of that protected group.
+Read failures retain ownership so retirement can be retried after access returns.
+
 This protects template metadata from older writers, not all concurrent changes
 to shared instructions, skills or agent files. Older versions cannot manage
 templates. Do not use multiple versions to edit the same Library concurrently.
@@ -93,8 +105,9 @@ The shared physical skill files retain the same ownership protection. Legacy
 mutation; reads do not rewrite files.
 Legacy request ids remain accepted, while saved selections use `codex`.
 The editor preserves existing selections when a passive check fails, including
-an unavailable target. Such a checkbox stays selected and can be cleared; once
-cleared, the blocked target cannot be selected again. Editing the body alone
+an unavailable target. Such a checkbox stays selected and can be cleared.
+Unverified installed targets can be retried; conflicting, externally edited or
+uninstalled targets cannot be newly selected. Editing the body alone
 must not silently remove a deployment.
 DeepSeek Harness writes a native `SKILL.md` with `disable-model-invocation: true`
 and `user-invocable: true`, invoked as `/name`. Its native names require lowercase
@@ -112,9 +125,15 @@ artifacts. This does not claim coverage of future dynamically added commands.
 Save rechecks passive evidence under the Library lock. Missing template bodies
 are never treated as empty text.
 
-Only explicit **Check availability** may start verification processes. Opening,
-refreshing, passive check (`passive: true`), saving, target toggles and sync never
-start a Harness. Checks run outside the Library lock, with cancellation, bounded
+Turning the switch from off to on checks every installed supported Harness,
+including an empty library, and reports results independently. Repeating on
+does not restart checks. Adding a target checks only that Harness and the
+current template; removing a target does not start checks. New templates begin
+with no targets selected. Manual refresh forces an all-Harness check without
+requiring a template name. The check API accepts `target` for a single Harness,
+`force` to refresh successful evidence, and `passive` for read-only preflight.
+Opening the page, passive preflight, saving and sync never start native checks.
+Checks run outside the Library lock, with cancellation, bounded
 output and Windows `proc.Tree` cleanup. Pi has a 30-second external-probe budget
 per context; Codex shares 30 seconds across its context list, while DSH shares
 90 seconds for two enumerations and their source fingerprint. No check
@@ -140,9 +159,11 @@ when offline Pi returns an empty list.
 [`prompt_native.go`](../../internal/library/prompt_native.go) uses Codex's original
 `app-server`: initialize, initialized and `skills/list` only. Every distinct
 home/registered-project context must return explicit skills/errors lists; loading
-errors, disabled generated skills and malformed output block deployment. Returned
-skill locations are discovered, fingerprinted, then enumerated again to avoid
-trusting an inventory whose resources changed during discovery. A CLI result
+errors, disabled generated skills and malformed output block deployment. Each
+context is enumerated once; returned skill declarations join the source stamp.
+The native inventory is the command source of truth: nested skill examples in
+assets are not independently interpreted as additional declarations. This is
+recent inventory evidence, not proof of a stable inventory across two boots. A CLI result
 never certifies Desktop interaction or implicit-invocation policy acceptance.
 Responses, notifications and server requests are distinguished by their native
 envelopes. A schema-checked `remoteControl/status/changed` notification without
@@ -159,8 +180,7 @@ skill in the complete native inventory. That skill's name remains reserved. A
 notice about the template being deployed still blocks: Codex defaults a malformed
 policy to implicit discovery. The independently valid template keeps its own
 explicit-only policy. Successful states retain the notice in `reason` and its
-verified sources in `source`; two enumerations must agree on notices as well as
-commands.
+verified sources in `source`.
 The user configuration's `model_catalog_json` is also a source dependency:
 Codex reads relative references from its configuration directory, and a missing
 catalog can make native startup fall back to defaults. Its bytes and path
@@ -254,17 +274,31 @@ The Windows acceptance procedure and its practical limits are recorded in
 
 Inventories are complete-list, process-local caches, independent of the template
 name and excluded from backups/config sync. Their keys include effective launch
-and config paths, project contexts, environment and resource content fingerprints.
+and config paths, project contexts, environment and resource fingerprints.
+Codex reads declaration/configuration bytes, but records other installed files
+by path, type, size and modification time. A skill leaf contributes its
+`SKILL.md` and `agents/openai.yaml`, not its scripts or bundled assets. The
+stamp ignores empty Codex directories left after retiring managed files.
+This lighter invalidation can miss non-declaration edits preserving size and mtime;
+it does not certify future invocation. Codex evidence ignores unrelated DSH
+configuration. DSH keeps both enumerations and full-content comparison during
+active checks, then stores a lightweight declaration/source-identity stamp for
+passive reuse. Ordinary module bytes are not reread on page/save checks; module
+size or mtime changes still invalidate the result. The same metadata-preserving
+edit limitation applies. The light stamp is collected after the final deep
+comparison; it is recent evidence, not an atomic snapshot spanning that
+transition. Pi retains full-content invalidation.
 Managed, unedited template artifacts are excluded from stamps and protected by
 ownership hashes. Resource changes/read failures invalidate evidence. Fingerprints
 follow Windows junctions and symlinks with fresh component resolution and include
 their targets, so a byte-identical retarget still invalidates evidence. Broken
 required links and cycles block; absent optional dependency-resolution candidates
 retain their link identity without pretending to supply a module. A scan is
-bounded to 50,000 entries and 1 GiB of file contents, including bundled browser
-resources and the native executable. Fingerprints
+bounded to 50,000 entries and 1 GiB of file contents read. Deep DSH verification
+includes bundled resources and the native executable. Fingerprints
 cannot cover arbitrary external inputs used by extension code. Manual checks
-always discard prior evidence; only the newest concurrent check may publish.
+with `force` discard prior evidence; targeted checks reuse successful evidence
+while its sources match. Only the newest concurrent check may publish.
 Pre/post-source mismatch discards the answer. Passive save/sync recheck sources
 and static conflicts; stale evidence blocks only that target's new deployment.
 
@@ -288,7 +322,10 @@ empty array clears them. Setup snapshots keep selections by stable template
 id and restore those selections without replacing the template text.
 
 The GUI API has `GET /api/library/prompts` and `POST` actions `check`, `save`,
-`agents` and `remove` below that path. `agents` accepts `{id, agents}`: a stable
+`agents`, `enabled` and `remove` below that path. `enabled` requires an explicit
+boolean and changes the total switch. `checks` contains per-Harness inventory
+status independently of individual templates; completed native checks expose
+`checkedAt` as Unix milliseconds. `agents` accepts `{id, agents}`: a stable
 template id and an explicit array of target ids (an empty array turns all off;
 missing/null is rejected). `SetPromptAgents` loads the latest name and body
 under the Library lock and changes only target selections, never text or names.
@@ -297,14 +334,14 @@ individual `Result.Problems`; existing selections survive failed checks unless
 explicitly removed. Deployments still use passive conflict checks, ownership
 hashes and backups, with independent failures per target. This endpoint never
 starts a Harness. All mutations answer `part: "prompts"`, the current `PromptsView` and
-`Result`, preserving other Library sections and their unsaved drafts. No new
-persistence fields or harness adapters are involved.
+`Result`, preserving other Library sections and their unsaved drafts. The total
+switch is local persisted state; native evidence and check times are not persisted.
 
 The template list reuses the skills' `.lib-find` search layout and `agentChips`
 icons, including hover/focus expansion. Search filters names and bodies on input
 using NFKC plus lowercase; Refresh and New template stay in the heading. The
 editor retains its detailed target controls. Icons light only for `enabled`
-deployment states, separately from installation-specific native verification.
+deployment states; while the total switch is off they show retained selections.
 The list has no permanent native-verification badge: that explanation remains
 in the icon titles and editor. Abnormal icons keep their warning dots and
 reasons; selected abnormal targets still produce Needs attention.
@@ -316,8 +353,11 @@ agent control. Reload hints describe only successfully deployed targets.
 With at least two eligible targets, All turns those targets on or off,
 leaving blocked selections alone. A selected blocked target can still be removed
 individually. Clicking an unselected blocked target explains why in the list;
-expired native checks direct the user to the editor's Check availability, without
-opening it or running extensions automatically.
+new selections trigger only their Harness's availability check, reusing valid
+successful evidence. Cancelling a selection never starts a check. Failure of an
+added target's check does not discard concurrent cancellations of other targets.
+Editor checks apply each Harness's most recently requested result, so an older
+all-Harness response cannot revoke a newer successful single-Harness selection.
 
 Each template row reuses the skills' hover/focus delete button, between the
 body and agent chips, without opening the editor. Its in-app confirmation

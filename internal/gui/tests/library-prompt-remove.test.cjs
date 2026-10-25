@@ -14,12 +14,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       t.after(() => ctx.close());
       const page = await ctx.newPage();
       page.setDefaultTimeout(4000);
-      const errors = [], sent = [], targetPosts = [];
+      const errors = [], sent = [], targetPosts = [], checkPosts = [];
       page.on("pageerror", e => errors.push(e.message));
       const targets = [{ id: "claude", name: "Claude Code", icon: "claudecode-color", detected: true, verification: "pending" }];
       let items = ["a", "b", "c"].map(id => ({ id, name: `template-${id}`, text: "needle 正文", agents: ["claude"], states: [{ agent: "claude", status: "enabled" }] }));
       let failRemove = true, holdAgents = true, releaseAgents, failAgents = false, holdRead = false, releaseRead, holdRemove = false, releaseRemove;
-      const prompts = () => ({ items, targets });
+      const prompts = () => ({ enabled: true, items, targets });
       const theme = ["ja", "de"].includes(lang) ? "dark" : "light";
       await ctx.addInitScript(() => localStorage.setItem("magpie.libTab", "instructions"));
       await page.route("**/*", async route => {
@@ -31,7 +31,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         if (p === "/api/plugins") return route.fulfill({ json: { plugins: [] } });
         if (p === "/api/providers") return route.fulfill({ json: { providers: [], gateway: { running: true } } });
         if (p === "/api/library") return route.fulfill({ json: { agents: [{ id: "claude", name: "Claude Code", icon: "claudecode-color" }], servers: [], skills: [], foundSkills: [], foundServers: [], projects: [], prompts: prompts(), instructions: { shared: "", sets: [{ id: "default", name: "", text: "", active: true }], agents: [] } } });
-        if (p === "/api/library/prompts/check") return route.fulfill({ json: [{ agent: "claude", status: "available" }] });
+        if (p === "/api/library/prompts/check") { checkPosts.push(route.request().postDataJSON()); return route.fulfill({ json: [{ agent: "claude", status: "available" }] }); }
         if (p === "/api/library/prompts") {
           const view = prompts();
           if (holdRead) { holdRead = false; await new Promise(resolve => { releaseRead = resolve; }); }
@@ -83,9 +83,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await agentRequest;
       try {
         assert(await remove("b").isDisabled(), "another template's target update blocks every list deletion");
-        const refresh = await page.locator(".lib-prompts .lib-cardhead button").first().elementHandle();
+        const refresh = await page.locator('.lib-prompts .lib-cardhead button:not([role="switch"])').first().elementHandle();
+        const checkedBefore = checkPosts.length;
         await refresh.press("Space");
-        await page.waitForFunction(e => !e.isConnected, refresh);
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        assert.equal(checkPosts.length, checkedBefore, "refresh cannot start native checks during a target write");
         assert(await remove("b").isDisabled(), "a list refresh cannot bypass the pending-target guard");
         await row("b").press("Enter");
         assert(await page.locator(".lib-prompt-remove").isDisabled(), "editor deletion observes the same global guard");
@@ -112,7 +114,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator('textarea[data-lib="set:default"]').fill("尚未保存的共享指令");
       holdRead = true;
       const staleRead = page.waitForRequest(r => r.url().endsWith("/library/prompts"));
-      const staleRefresh = await page.locator(".lib-prompts .lib-cardhead button").first().elementHandle();
+      const staleRefresh = await page.locator('.lib-prompts .lib-cardhead button:not([role="switch"])').first().elementHandle();
       await staleRefresh.press("Space");
       await staleRead;
       await remove("b").press("Space");

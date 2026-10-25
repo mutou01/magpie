@@ -4,6 +4,8 @@
 // works. {name} slots are filled by t(str, vars).
 const I18N = {
   zh: {
+    "Prompt templates": "提示词模板",
+    "Prompt templates are turned off": "提示词模板已关闭",
     "Check native command availability again": "需要重新检查原生命令可用性",
     "Could not find the native command-check entry point": "找不到原生命令检查入口",
     "Could not start native skill verification": "无法启动原生技能检查",
@@ -3980,6 +3982,8 @@ const I18N = {
     "Where": "位置",
   },
   "zh-TW": {
+    "Prompt templates": "提示詞範本",
+    "Prompt templates are turned off": "提示詞範本已關閉",
     "Check native command availability again": "需要重新檢查原生命令可用性",
     "Could not find the native command-check entry point": "找不到原生命令檢查入口",
     "Could not start native skill verification": "無法啟動原生技能檢查",
@@ -7941,6 +7945,8 @@ const I18N = {
     "Where": "位置",
   },
   ja: {
+    "Prompt templates": "プロンプトテンプレート",
+    "Prompt templates are turned off": "プロンプトテンプレートはオフです",
     "Check native command availability again": "ネイティブコマンドの利用可否を再確認してください",
     "Could not find the native command-check entry point": "ネイティブコマンドの確認用起動先が見つかりません",
     "Could not start native skill verification": "ネイティブスキルの確認を開始できません",
@@ -11904,6 +11910,8 @@ const I18N = {
     "Where": "場所",
   },
   de: {
+    "Prompt templates": "Prompt-Vorlagen",
+    "Prompt templates are turned off": "Prompt-Vorlagen sind ausgeschaltet",
     "Check native command availability again": "Native Befehlsverfügbarkeit erneut prüfen",
     "Could not find the native command-check entry point": "Nativer Einstiegspunkt zur Befehlsprüfung nicht gefunden",
     "Could not start native skill verification": "Native Skill-Prüfung konnte nicht gestartet werden",

@@ -120,8 +120,10 @@ async function main() {
           return response.json();
         };
         const pi = states => states.find(s => s.agent === "pi");
-        assert.equal(pi(await api("check", { name: "api-review", passive: true })).status, "unverified");
+        assert.equal((await api("")).enabled, false, "An empty library starts with prompt templates off");
+        assert.equal(pi(await api("check", { name: "api-review", passive: true })).status, "disabled");
         assert.equal(await counter(), "", "Passive HTTP check did not start Pi");
+        assert.equal((await api("enabled", { enabled: true })).prompts.enabled, true, "Explicitly enable templates before native verification");
         assert.equal(pi(await api("check", { name: "api-review" })).status, "available");
         const before = await counter();
         assert(before, "Explicit HTTP check loaded real Pi");

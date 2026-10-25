@@ -32,9 +32,10 @@ type piCommand struct {
 }
 
 type piCommandCheck struct {
-	key      string
-	commands []piCommand
-	err      error
+	key       string
+	commands  []piCommand
+	err       error
+	checkedAt int64
 }
 
 var piCommandChecks = struct {
@@ -54,7 +55,7 @@ func (l *Library) piCommandConflict(t PromptTarget, p *Prompt) (string, error) {
 		return "", err
 	}
 	for _, name := range s.builtins {
-		if promptKey(name) == promptKey(p.Name) {
+		if p != nil && promptKey(name) == promptKey(p.Name) {
 			return "Pi /" + name, nil
 		}
 	}
@@ -69,6 +70,9 @@ func (l *Library) piCommandConflict(t PromptTarget, p *Prompt) (string, error) {
 	}
 	if c.err != nil {
 		return "", c.err
+	}
+	if p == nil {
+		return "", nil
 	}
 	for _, cmd := range c.commands {
 		if cmd.managed {
@@ -98,6 +102,11 @@ func (l *Library) checkPiCommands(ctx context.Context, t PromptTarget) {
 	piCommandChecks.Unlock()
 	s, err := l.piCommandSnapshot(t)
 	if err != nil {
+		piCommandChecks.Lock()
+		if piCommandChecks.seq[t.dir] == seq {
+			piCommandChecks.m[t.dir] = piCommandCheck{err: err, checkedAt: time.Now().UnixMilli()}
+		}
+		piCommandChecks.Unlock()
 		return
 	}
 	c := piCommandCheck{key: s.key}
@@ -137,6 +146,7 @@ func (l *Library) checkPiCommands(ctx context.Context, t PromptTarget) {
 	if ctx.Err() != nil {
 		c.err = &promptRuntimeError{"Pi command verification was cancelled", t.dir}
 	}
+	c.checkedAt = time.Now().UnixMilli()
 	piCommandChecks.Lock()
 	if piCommandChecks.seq[t.dir] == seq {
 		piCommandChecks.m[t.dir] = c

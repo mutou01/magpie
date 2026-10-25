@@ -35,6 +35,7 @@ type nativePromptCheck struct {
 	notices     []codexPromptNotice
 	dshWarnings []string
 	err         error
+	checkedAt   int64
 }
 
 var nativePromptChecks = struct {
@@ -52,6 +53,10 @@ type nativePromptSnapshot struct {
 func nativePromptCacheKey(t PromptTarget) string { return t.ID + "\x00" + t.dir }
 
 func (l *Library) nativePromptSnapshot(t PromptTarget, extra []string) (nativePromptSnapshot, error) {
+	return l.nativePromptSnapshotMode(t, extra, t.ID == "codex")
+}
+
+func (l *Library) nativePromptSnapshotMode(t PromptTarget, extra []string, light bool) (nativePromptSnapshot, error) {
 	s := nativePromptSnapshot{bin: proc.FindTool(t.ID)}
 	if t.ID == "dsh" {
 		s.bin = dshPromptEntry(t.dir)
@@ -94,13 +99,12 @@ func (l *Library) nativePromptSnapshot(t PromptTarget, extra []string) (nativePr
 		for _, ancestor := range piSkillAncestors(real) {
 			s.roots = append(s.roots, filepath.Join(ancestor, ".agents", "skills"), filepath.Join(ancestor, ".codex", "config.toml"))
 		}
-		s.roots = append(s.roots, filepath.Join(real, ".dsh", "skills"), filepath.Join(real, ".dsh", "cordis.patch.yml"))
 		if t.ID == "dsh" {
-			s.roots = append(s.roots, filepath.Join(real, ".env"))
+			s.roots = append(s.roots, filepath.Join(real, ".dsh", "skills"), filepath.Join(real, ".dsh", "cordis.patch.yml"), filepath.Join(real, ".env"))
 		}
 	}
 	slices.Sort(s.dirs)
-	key, err := l.promptResourceKey(t, s.bin, s.dirs, s.roots)
+	key, err := l.promptResourceKeyMode(t, s.bin, s.dirs, s.roots, light)
 	s.key = key
 	return s, err
 }
@@ -152,6 +156,12 @@ func promptSourcePath(path string, link func(string, string), depth int) (string
 // Hash bytes, not merely mtime: replacing a same-sized source while preserving
 // timestamps must invalidate evidence too. Follow links and bound the traversal.
 func (l *Library) promptResourceKey(t PromptTarget, bin string, dirs, roots []string) (string, error) {
+	return l.promptResourceKeyMode(t, bin, dirs, roots, false)
+}
+
+// Light evidence watches declarations and source identities, not bundled binary
+// assets. Deep byte fingerprints remain the active DSH and Pi checks' contract.
+func (l *Library) promptResourceKeyMode(t PromptTarget, bin string, dirs, roots []string, light bool) (string, error) {
 	h := sha256.New()
 	fmt.Fprintf(h, "%s\x00%s\x00%s\n", t.dir, bin, strings.Join(dirs, "\x00"))
 	env := os.Environ()
@@ -159,6 +169,7 @@ func (l *Library) promptResourceKey(t PromptTarget, bin string, dirs, roots []st
 	fmt.Fprintln(h, strings.Join(env, "\x00"))
 	seen := map[string]bool{}
 	active := map[string]bool{}
+	rootDirs := map[string]bool{}
 	recordLink := func(path, target string) { fmt.Fprintf(h, "link:%s:%s\n", path, target) }
 	total := int64(0)
 	type ownedFile struct{ path, hash string }
@@ -228,6 +239,26 @@ func (l *Library) promptResourceKey(t PromptTarget, bin string, dirs, roots []st
 			return walk(real, nil)
 		}
 		if fi.IsDir() {
+			if light && l.isPromptSkill(path) {
+				// Managed members are checked together by promptState; their
+				// deployment must not invalidate unrelated inventory evidence.
+				return nil
+			}
+			if light {
+				// Codex discovers skills from declaration files. Empty folders
+				// left after retiring our files do not change that inventory.
+				if t.ID != "codex" && !rootDirs[path] {
+					fmt.Fprintf(h, "dir:%s\n", path)
+				}
+				if _, err := os.Stat(filepath.Join(path, "SKILL.md")); err == nil {
+					if err := walk(filepath.Join(path, "SKILL.md"), nil); err != nil {
+						return err
+					}
+					return walk(filepath.Join(path, "agents", "openai.yaml"), nil)
+				} else if !os.IsNotExist(err) {
+					return err
+				}
+			}
 			entries, err := os.ReadDir(path)
 			if err != nil {
 				return err
@@ -249,6 +280,14 @@ func (l *Library) promptResourceKey(t PromptTarget, bin string, dirs, roots []st
 		if !fi.Mode().IsRegular() {
 			return fmt.Errorf("non-file command source: %s", path)
 		}
+		if light {
+			name, ext := filepath.Base(path), filepath.Ext(path)
+			declaration := name == "SKILL.md" || ext == ".toml" || ext == ".yaml" || ext == ".yml" || ext == ".json" || name == ".env"
+			if !declaration {
+				fmt.Fprintf(h, "file:%s:%d:%d:%d\n", path, fi.Mode(), fi.Size(), fi.ModTime().UnixNano())
+				return nil
+			}
+		}
 		total += fi.Size()
 		// A bundled browser plugin alone can exceed 512 MiB. Keep full-byte
 		// evidence, with a bounded budget covering it and the native executable.
@@ -261,6 +300,11 @@ func (l *Library) promptResourceKey(t PromptTarget, bin string, dirs, roots []st
 	roots = slices.Clone(roots)
 	slices.Sort(roots)
 	for _, root := range roots {
+		if light {
+			// A previously absent discovery root containing only our own
+			// deployment is equivalent to its empty state before deployment.
+			fmt.Fprintf(h, "root:%s\n", root)
+		}
 		real, err := promptSourcePath(root, recordLink, 0)
 		// Native package resolution records absent shadowing manifests too.
 		// A broken candidate is still absent; its link chain above has already
@@ -271,6 +315,7 @@ func (l *Library) promptResourceKey(t PromptTarget, bin string, dirs, roots []st
 		if err != nil {
 			return "", err
 		}
+		rootDirs[filepath.Clean(real)] = true
 		info, err := os.Lstat(real)
 		if os.IsNotExist(err) {
 			continue
@@ -318,26 +363,37 @@ func (l *Library) promptResourceKey(t PromptTarget, bin string, dirs, roots []st
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func (l *Library) nativePromptConflict(t PromptTarget, p *Prompt) (string, []string, error) {
+func (l *Library) nativePromptEvidence(t PromptTarget) (nativePromptCheck, error) {
 	k := nativePromptCacheKey(t)
 	nativePromptChecks.Lock()
 	c, ok := nativePromptChecks.m[k]
 	nativePromptChecks.Unlock()
-	s, err := l.nativePromptSnapshot(t, c.roots)
+	if !ok {
+		return c, &promptRuntimeError{"Check native command availability again", t.Name}
+	}
+	s, err := l.nativePromptSnapshotMode(t, c.roots, true)
 	if err != nil {
 		nativePromptChecks.Lock()
 		delete(nativePromptChecks.m, k)
 		nativePromptChecks.Unlock()
-		return "", nil, err
+		return c, err
 	}
 	if !ok || c.key != s.key {
 		nativePromptChecks.Lock()
 		delete(nativePromptChecks.m, k)
 		nativePromptChecks.Unlock()
-		return "", nil, &promptRuntimeError{"Check native command availability again", t.Name}
+		return c, &promptRuntimeError{"Check native command availability again", t.Name}
 	}
 	if c.err != nil {
-		return "", nil, c.err
+		return c, c.err
+	}
+	return c, nil
+}
+
+func (l *Library) nativePromptConflict(t PromptTarget, p *Prompt) (string, []string, error) {
+	c, err := l.nativePromptEvidence(t)
+	if err != nil {
+		return "", nil, err
 	}
 	for _, cmd := range c.commands {
 		if promptKey(cmd.Name) != promptKey(p.Name) {
@@ -377,6 +433,11 @@ func (l *Library) checkNativePromptCommands(ctx context.Context, t PromptTarget)
 	nativePromptChecks.Unlock()
 	s, err := l.nativePromptSnapshot(t, nil)
 	if err != nil {
+		nativePromptChecks.Lock()
+		if nativePromptChecks.seq[k] == seq {
+			nativePromptChecks.m[k] = nativePromptCheck{err: err, checkedAt: time.Now().UnixMilli()}
+		}
+		nativePromptChecks.Unlock()
 		return
 	}
 	c := nativePromptCheck{key: s.key}
@@ -402,28 +463,19 @@ func (l *Library) checkNativePromptCommands(ctx context.Context, t PromptTarget)
 		}
 		cancel()
 	} else {
-		// Discover resource locations, then stamp them BEFORE the authoritative
-		// second enumeration. Reject a changing list or any incomplete context.
+		// One native enumeration is the recent inventory evidence. Record the
+		// returned sources for later invalidation; this does not certify a future
+		// invocation or require a second app-server boot.
 		step, cancel := context.WithTimeout(ctx, 30*time.Second)
-		var first, current codexPromptInventory
+		var first codexPromptInventory
 		first, c.err = readCodexPromptSkills(step, s.bin, t.dir, s.dirs)
 		if c.err == nil {
+			c.commands, c.notices = first.Commands, first.Notices
 			for _, cmd := range first.Commands {
 				c.roots = append(c.roots, filepath.Dir(cmd.Path))
 			}
 			s, c.err = l.nativePromptSnapshot(t, c.roots)
 			c.key = s.key
-			if c.err == nil {
-				current, c.err = readCodexPromptSkills(step, s.bin, t.dir, s.dirs)
-				c.commands, c.notices = current.Commands, current.Notices
-			}
-			if c.err == nil {
-				a, _ := json.Marshal(first)
-				b, _ := json.Marshal(current)
-				if string(a) != string(b) {
-					c.err = &promptRuntimeError{"Native command sources changed during verification", t.Name}
-				}
-			}
 		}
 		cancel()
 	}
@@ -442,9 +494,19 @@ func (l *Library) checkNativePromptCommands(ctx context.Context, t PromptTarget)
 	if err != nil || after.key != c.key {
 		c.err = &promptRuntimeError{"Native command sources changed during verification", t.Name}
 	}
+	if t.ID == "dsh" {
+		// Keep full-byte checks around both native enumerations. Subsequent
+		// reads reuse that result while declarations and source identities match.
+		passive, err := l.nativePromptSnapshotMode(t, c.roots, true)
+		c.key = passive.key
+		if err != nil && c.err == nil {
+			c.err = err
+		}
+	}
 	if ctx.Err() != nil {
 		c.err = &promptRuntimeError{"Native command verification was cancelled", t.Name}
 	}
+	c.checkedAt = time.Now().UnixMilli()
 	nativePromptChecks.Lock()
 	if nativePromptChecks.seq[k] == seq {
 		nativePromptChecks.m[k] = c

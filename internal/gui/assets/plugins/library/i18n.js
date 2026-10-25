@@ -5,7 +5,6 @@ magpie.strings({
   zh: {
     "A template named {name} already exists": "已存在名为「{name}」的模板",
     "This template no longer exists": "此模板已不存在",
-    "Prompt templates": "提示词模板",
     "New template": "新建模板",
     "The template is removed from the Library, with a backup kept. Unchanged managed deployments are removed; externally edited files are kept and reported.": "删除资源库中的模板并保留备份；清理未被外部修改的受管部署，保留外部修改的文件并报告。",
     "Wait for template target updates to finish before deleting": "请等待模板目标更新完成后再删除",
@@ -657,7 +656,6 @@ magpie.strings({
   "zh-TW": {
     "A template named {name} already exists": "已存在名為「{name}」的範本",
     "This template no longer exists": "此範本已不存在",
-    "Prompt templates": "提示詞範本",
     "New template": "新增範本",
     "The template is removed from the Library, with a backup kept. Unchanged managed deployments are removed; externally edited files are kept and reported.": "刪除資源庫中的範本並保留備份；清理未經外部修改的受管部署，保留外部修改的檔案並回報。",
     "Wait for template target updates to finish before deleting": "請等待範本目標更新完成後再刪除",
@@ -1309,7 +1307,6 @@ magpie.strings({
   ja: {
     "A template named {name} already exists": "「{name}」というテンプレートは既に存在します",
     "This template no longer exists": "このテンプレートは存在しません",
-    "Prompt templates": "プロンプトテンプレート",
     "New template": "新しいテンプレート",
     "The template is removed from the Library, with a backup kept. Unchanged managed deployments are removed; externally edited files are kept and reported.": "ライブラリからテンプレートを削除し、バックアップを保持します。外部で変更されていない管理対象の配置を削除し、外部で編集されたファイルは保持して報告します。",
     "Wait for template target updates to finish before deleting": "テンプレートの対象更新が完了してから削除してください",
@@ -1961,7 +1958,6 @@ magpie.strings({
   de: {
     "A template named {name} already exists": "Eine Vorlage namens {name} ist bereits vorhanden",
     "This template no longer exists": "Diese Vorlage ist nicht mehr vorhanden",
-    "Prompt templates": "Prompt-Vorlagen",
     "New template": "Neue Vorlage",
     "The template is removed from the Library, with a backup kept. Unchanged managed deployments are removed; externally edited files are kept and reported.": "Die Vorlage wird aus der Bibliothek entfernt und eine Sicherung aufbewahrt. Unveränderte verwaltete Dateien werden entfernt; extern bearbeitete Dateien bleiben erhalten und werden gemeldet.",
     "Wait for template target updates to finish before deleting": "Vor dem Löschen auf den Abschluss der Vorlagen-Zielaktualisierungen warten",

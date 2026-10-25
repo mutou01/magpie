@@ -15,6 +15,7 @@ import (
 // binaries never rewrite it. Bundle still carries only portable templates.
 type promptStore struct {
 	Version int                                  `json:"version"`
+	Enabled *bool                                `json:"enabled,omitempty"`
 	Prompts []*Prompt                            `json:"prompts"`
 	Applied map[string]map[string]*AppliedPrompt `json:"applied"`
 }
@@ -56,6 +57,7 @@ func (l *Library) loadPromptStore() error {
 		}
 	}
 	l.Prompts = s.Prompts
+	l.PromptsEnabled = s.Enabled
 	// Empty is authoritative too; never revive stale mirror ownership.
 	for _, a := range l.Applied {
 		a.Prompts = nil
@@ -67,7 +69,7 @@ func (l *Library) loadPromptStore() error {
 }
 
 func (l *Library) savePromptStore() error {
-	s := promptStore{Version: 1, Prompts: l.Prompts, Applied: map[string]map[string]*AppliedPrompt{}}
+	s := promptStore{Version: 1, Enabled: l.PromptsEnabled, Prompts: l.Prompts, Applied: map[string]map[string]*AppliedPrompt{}}
 	if s.Prompts == nil {
 		s.Prompts = []*Prompt{}
 	}
@@ -77,7 +79,7 @@ func (l *Library) savePromptStore() error {
 		}
 	}
 	old, err := os.ReadFile(promptStorePath())
-	if os.IsNotExist(err) && len(s.Prompts) == 0 && len(s.Applied) == 0 {
+	if os.IsNotExist(err) && len(s.Prompts) == 0 && len(s.Applied) == 0 && !l.promptsEnabled() {
 		return nil // a library that has never had templates needs no index
 	}
 	if err != nil && !os.IsNotExist(err) {

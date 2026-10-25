@@ -10,6 +10,7 @@ const { strings } = require("./strings.cjs");
 test("native prompt capability diagnostics are translated", () => {
   const { I18N } = strings();
   for (const lang of ["zh", "zh-TW", "ja", "de"]) {
+    assert(I18N[lang]["Prompt templates are turned off"], `${lang}: global prompt disabled reason`);
     assert(I18N[lang]["Native skill metadata could not be loaded; invocation policy is unverified"], lang);
     assert(I18N[lang]["Codex configuration contains warnings; native verification is incomplete"], lang);
     for (const key of ["DeepSeek Harness plugin dependency could not be loaded", "DeepSeek Harness plugin requires an export unavailable in the installed dependency", "DeepSeek Harness environment variable is restricted to the launching process"]) {

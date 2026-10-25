@@ -14,7 +14,7 @@ func TestPromptTemplateCodexWarningExceptionsFailClosedAtTheirBoundary(t *testin
 	legacy := "Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.\n  user (C:\\fixture\\config.toml): `disable_response_storage` is ignored."
 	for _, mode := range []string{"unknown-key", "mixed-keys", "non-null-details", "warning-request", "wrong-stderr-target", "different-stderr-text", "missing-metadata-source", "non-file-metadata-source", "relative-metadata-source"} {
 		t.Run(mode, func(t *testing.T) {
-			h, _ := promptCodexFixture(t)
+			h, _ := promptEnabledCodexFixture(t)
 			summary := strings.Replace(legacy, `C:\fixture\config.toml`, filepath.Join(h, ".codex/config.toml"), 1)
 			params := map[string]any{"summary": summary, "details": nil}
 			warning := map[string]any{"method": "configWarning", "params": params}
@@ -66,7 +66,7 @@ func TestPromptTemplateCodexWarningExceptionsFailClosedAtTheirBoundary(t *testin
 }
 
 func TestPromptTemplateCodexForeignMetadataURIKeepsEncodedPathIdentity(t *testing.T) {
-	h, _ := promptCodexFixture(t)
+	h, _ := promptEnabledCodexFixture(t)
 	foreign := filepath.Join(h, ".agents/skills/foreign skill 中文/SKILL.md")
 	write(t, foreign, "---\nname: foreign-native-name\ndescription: Native path identity\n---\nBody\n")
 	policy := filepath.Join(filepath.Dir(foreign), "agents/openai.yaml")
@@ -96,7 +96,7 @@ func TestPromptTemplateCodexForeignMetadataURIKeepsEncodedPathIdentity(t *testin
 }
 
 func TestPromptTemplateCodexEditedOwnPolicyRemainsUnavailable(t *testing.T) {
-	h, _ := promptCodexFixture(t)
+	h, _ := promptEnabledCodexFixture(t)
 	if _, err := CheckPrompt(PromptChange{Name: "audit-code"}); err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestPromptTemplateCodexEditedOwnPolicyRemainsUnavailable(t *testing.T) {
 }
 
 func TestPromptTemplateCodexForeignMetadataFailurePreservesIndependentAvailability(t *testing.T) {
-	h, _ := promptCodexFixture(t)
+	h, _ := promptEnabledCodexFixture(t)
 	foreign := filepath.Join(h, ".agents/skills/foreign-audit/SKILL.md")
 	write(t, foreign, "---\nname: foreign-audit\ndescription: Foreign skill with native default policy\n---\nForeign body\n")
 	policy := filepath.Join(filepath.Dir(foreign), "agents/openai.yaml")
@@ -164,7 +164,7 @@ func TestPromptTemplateCodexForeignMetadataFailurePreservesIndependentAvailabili
 }
 
 func TestPromptTemplateCodexIgnoredLegacySettingKeepsCompleteInventoryUsable(t *testing.T) {
-	h, _ := promptCodexFixture(t)
+	h, _ := promptEnabledCodexFixture(t)
 	write(t, filepath.Join(h, "codex-mode"), "ignored-legacy-config")
 	states, err := CheckPrompt(PromptChange{Name: "audit-code"})
 	if err != nil {

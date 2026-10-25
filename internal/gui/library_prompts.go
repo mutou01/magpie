@@ -16,9 +16,12 @@ func promptRoutes(mux *http.ServeMux) {
 		}
 		writeJSON(w, v)
 	})
-	for _, action := range []string{"save", "check", "remove", "agents"} {
+	for _, action := range []string{"save", "check", "remove", "agents", "enabled"} {
 		mux.HandleFunc("POST /api/library/prompts/"+action, func(w http.ResponseWriter, r *http.Request) {
-			var c library.PromptChange
+			var c struct {
+				library.PromptChange
+				Enabled *bool `json:"enabled"`
+			}
 			if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
 				fail(w, err)
 				return
@@ -28,7 +31,7 @@ func promptRoutes(mux *http.ServeMux) {
 			if action == "check" {
 				// Only an explicit check (passive omitted/false) may load Pi's
 				// extensions. A save's preflight sends passive:true.
-				v, err := library.CheckPromptContext(r.Context(), c)
+				v, err := library.CheckPromptContext(r.Context(), c.PromptChange)
 				if err != nil {
 					fail(w, err)
 					return
@@ -36,8 +39,14 @@ func promptRoutes(mux *http.ServeMux) {
 				writeJSON(w, v)
 				return
 			}
-			if action == "save" {
-				res, err = library.SavePrompt(c)
+			if action == "enabled" {
+				if c.Enabled == nil {
+					http.Error(w, "enabled must be a boolean", http.StatusBadRequest)
+					return
+				}
+				res, err = library.SetPromptsEnabledContext(r.Context(), *c.Enabled)
+			} else if action == "save" {
+				res, err = library.SavePrompt(c.PromptChange)
 			} else if action == "agents" {
 				res, err = library.SetPromptAgents(c.ID, c.Agents)
 			} else {

@@ -111,7 +111,7 @@ func piPromptState(t *testing.T, c PromptChange) PromptState {
 
 func TestPromptTemplatePiRuntimeUsesCapabilitiesAndExistingProjectTrust(t *testing.T) {
 	t.Run("version", func(t *testing.T) {
-		h, _ := promptPiFixture(t)
+		h, _ := promptEnabledPiFixture(t)
 		for _, version := range []string{"1.3.0", "9.0.0", "development"} {
 			write(t, filepath.Join(h, "pi-version"), version)
 			if s := piPromptState(t, PromptChange{Name: "d"}); s.Status != "available" {
@@ -120,7 +120,7 @@ func TestPromptTemplatePiRuntimeUsesCapabilitiesAndExistingProjectTrust(t *testi
 		}
 	})
 	t.Run("project trust", func(t *testing.T) {
-		h, _ := promptPiFixture(t)
+		h, _ := promptEnabledPiFixture(t)
 		project := filepath.Join(h, "work")
 		write(t, filepath.Join(project, ".pi/extensions/project.ts"), "export default pi => {}")
 		ok(t)(AddProject(project))
@@ -134,14 +134,14 @@ func TestPromptTemplatePiRuntimeUsesCapabilitiesAndExistingProjectTrust(t *testi
 }
 
 func TestPromptTemplatePiRuntimeUsesRegisteredNamesAndFreshChecks(t *testing.T) {
-	h, log := promptPiFixture(t)
+	h, log := promptEnabledPiFixture(t)
 	write(t, filepath.Join(h, "pi-commands.json"), `[{"name":"skill:d","source":"skill"}]`)
 	if s := piPromptState(t, PromptChange{Name: "d"}); s.Status != "available" {
 		t.Fatalf("skill namespace is not /d: %+v", s)
 	}
 	before := read(t, log)
 	write(t, filepath.Join(h, "pi-commands.json"), `[{"name":"d","source":"extension","sourceInfo":{"path":"fixture-extension.ts"}}]`)
-	if s := piPromptState(t, PromptChange{Name: "d"}); s.Status != "conflict" || !strings.Contains(s.Source, "fixture-extension.ts") {
+	if s := piPromptState(t, PromptChange{Name: "d", Force: true}); s.Status != "conflict" || !strings.Contains(s.Source, "fixture-extension.ts") {
 		t.Fatalf("manual check reused stale commands: %+v", s)
 	}
 	if read(t, log) == before {
@@ -150,7 +150,7 @@ func TestPromptTemplatePiRuntimeUsesRegisteredNamesAndFreshChecks(t *testing.T) 
 }
 
 func TestPromptTemplatePiRuntimeIncludesBundledExtensionsWithoutUserExtensions(t *testing.T) {
-	h, log := promptPiFixture(t)
+	h, log := promptEnabledPiFixture(t)
 	if err := os.Remove(filepath.Join(h, ".pi/agent/extensions/observer.ts")); err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestPromptTemplatePiRuntimeIncludesBundledExtensionsWithoutUserExtensions(t
 }
 
 func TestPromptTemplatePiProjectMCPRequiresTrust(t *testing.T) {
-	h, _ := promptPiFixture(t)
+	h, _ := promptEnabledPiFixture(t)
 	p := filepath.Join(h, "work")
 	write(t, filepath.Join(p, ".pi/mcp.json"), `{}`)
 	ok(t)(AddProject(p))
@@ -174,7 +174,7 @@ func TestPromptTemplatePiProjectMCPRequiresTrust(t *testing.T) {
 }
 
 func TestPromptTemplatePiReadsInstalledBuiltinsAndRejectsUnknownDefinitions(t *testing.T) {
-	h, _ := promptPiFixture(t)
+	h, _ := promptEnabledPiFixture(t)
 	root := filepath.Join(h, ".pi/agent/install/releases/current/node_modules/@earendil-works/pi-coding-agent")
 	write(t, filepath.Join(h, ".pi/agent/install/current-version"), "current")
 	write(t, filepath.Join(root, "package.json"), `{"name":"@earendil-works/pi-coding-agent","bin":{"pi":"dist/cli.js"}}`)
@@ -194,7 +194,7 @@ func TestPromptTemplatePiReadsInstalledBuiltinsAndRejectsUnknownDefinitions(t *t
 
 func TestPromptTemplatePiRejectsUnrecognizedDispatcherBranches(t *testing.T) {
 
-	h, _ := promptPiFixture(t)
+	h, _ := promptEnabledPiFixture(t)
 	root := filepath.Join(h, ".pi/agent/install/releases/current/node_modules/@earendil-works/pi-coding-agent")
 	for _, branch := range []string{
 		`if (/^\/hidden-future/.test(text)) { return; }`,
@@ -214,7 +214,7 @@ func TestPromptTemplatePiRejectsUnrecognizedDispatcherBranches(t *testing.T) {
 
 func promptCheckedPiFixture(t *testing.T) string {
 	t.Helper()
-	h, _ := promptPiFixture(t)
+	h, _ := promptEnabledPiFixture(t)
 	if s := piPromptState(t, PromptChange{Name: "fixture-probe"}); s.Status != "available" {
 		t.Fatal(s)
 	}
@@ -252,7 +252,7 @@ func promptPiFixture(t *testing.T) (string, string) {
 }
 
 func TestPromptTemplatePiRuntimeChecksCommandsAndReusesResults(t *testing.T) {
-	_, log := promptPiFixture(t)
+	_, log := promptEnabledPiFixture(t)
 	states, err := CheckPrompt(PromptChange{Name: "d"})
 	if err != nil {
 		t.Fatal(err)
@@ -283,7 +283,7 @@ func TestPromptTemplatePiRuntimeChecksCommandsAndReusesResults(t *testing.T) {
 }
 
 func TestPromptTemplatePiRuntimeManagedCommandsDoNotSurviveRenameInCache(t *testing.T) {
-	h, log := promptPiFixture(t)
+	h, log := promptEnabledPiFixture(t)
 	if s := piPromptState(t, PromptChange{Name: "d"}); s.Status != "available" {
 		t.Fatal(s)
 	}
@@ -311,12 +311,12 @@ func TestPromptTemplatePiRuntimeManagedCommandsDoNotSurviveRenameInCache(t *test
 func TestPromptTemplatePiRuntimeFailuresInvalidateEarlierSuccess(t *testing.T) {
 	for _, mode := range []string{"partial", "invalid", "oversized", "interaction", "extension-error"} {
 		t.Run(mode, func(t *testing.T) {
-			h, log := promptPiFixture(t)
+			h, log := promptEnabledPiFixture(t)
 			if s := piPromptState(t, PromptChange{Name: "d"}); s.Status != "available" {
 				t.Fatal(s)
 			}
 			write(t, filepath.Join(h, "pi-mode"), mode)
-			if s := piPromptState(t, PromptChange{Name: "d"}); s.Status != "unverified" {
+			if s := piPromptState(t, PromptChange{Name: "d", Force: true}); s.Status != "unverified" {
 				t.Fatalf("partial/failed runtime accepted: %+v", s)
 			}
 			before := read(t, log)
@@ -331,7 +331,7 @@ func TestPromptTemplatePiRuntimeFailuresInvalidateEarlierSuccess(t *testing.T) {
 }
 
 func TestPromptTemplatePiRuntimeDoesNotBlockEditsAndRejectsChangedSources(t *testing.T) {
-	h, log := promptPiFixture(t)
+	h, log := promptEnabledPiFixture(t)
 	write(t, filepath.Join(h, "pi-mode"), "hold")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -383,7 +383,7 @@ func TestPromptTemplatePiRuntimeDoesNotBlockEditsAndRejectsChangedSources(t *tes
 }
 
 func TestPromptTemplatePiRuntimePassiveSourceChangePreservesDeployment(t *testing.T) {
-	h, log := promptPiFixture(t)
+	h, log := promptEnabledPiFixture(t)
 	if s := piPromptState(t, PromptChange{Name: "d"}); s.Status != "available" {
 		t.Fatal(s)
 	}
@@ -412,7 +412,7 @@ func TestPromptTemplatePiRuntimePassiveSourceChangePreservesDeployment(t *testin
 func TestPromptTemplatePiRuntimeMissingSourcesStayUnknown(t *testing.T) {
 	for _, settings := range []string{`{"extensions":["./missing.ts"]}`, `{"packages":["npm:missing-fixture"]}`, `{"packages":["./missing-package"]}`} {
 		t.Run(settings, func(t *testing.T) {
-			h, _ := promptPiFixture(t)
+			h, _ := promptEnabledPiFixture(t)
 			write(t, filepath.Join(h, ".pi/agent/settings.json"), settings)
 			if s := piPromptState(t, PromptChange{Name: "d"}); s.Status != "unverified" {
 				t.Fatalf("offline Pi may silently skip missing sources: %+v", s)
@@ -422,7 +422,7 @@ func TestPromptTemplatePiRuntimeMissingSourcesStayUnknown(t *testing.T) {
 }
 
 func TestPromptTemplatePiRuntimeReadFailureDiscardsCache(t *testing.T) {
-	h, _ := promptPiFixture(t)
+	h, _ := promptEnabledPiFixture(t)
 	if s := piPromptState(t, PromptChange{Name: "d"}); s.Status != "available" {
 		t.Fatal(s)
 	}
@@ -440,7 +440,7 @@ func TestPromptTemplatePiRuntimeReadFailureDiscardsCache(t *testing.T) {
 }
 
 func TestPromptTemplatePiRuntimeNewestCheckWins(t *testing.T) {
-	h, log := promptPiFixture(t)
+	h, log := promptEnabledPiFixture(t)
 	write(t, filepath.Join(h, "pi-mode"), "hold")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -473,7 +473,7 @@ func TestPromptTemplatePiRuntimeNewestCheckWins(t *testing.T) {
 }
 
 func TestPromptTemplatePiRuntimeHonorsExistingProjectTrust(t *testing.T) {
-	h, log := promptPiFixture(t)
+	h, log := promptEnabledPiFixture(t)
 	project := filepath.Join(h, "work")
 	write(t, filepath.Join(project, ".pi/extensions/project.ts"), "export default pi => {}")
 	write(t, filepath.Join(project, "pi-commands.json"), `[{"name":"d","source":"extension","sourceInfo":{"path":"project-extension.ts"}}]`)
@@ -493,7 +493,7 @@ func TestPromptTemplatePiRuntimeHonorsExistingProjectTrust(t *testing.T) {
 }
 
 func TestPromptTemplatePiRuntimeTimeoutStaysUnknown(t *testing.T) {
-	h, _ := promptPiFixture(t)
+	h, _ := promptEnabledPiFixture(t)
 	write(t, filepath.Join(h, "pi-mode"), "hold")
 	previous := piCheckBudget
 	piCheckBudget = 3 * time.Second
@@ -504,7 +504,7 @@ func TestPromptTemplatePiRuntimeTimeoutStaysUnknown(t *testing.T) {
 }
 
 func TestPromptTemplatePiRuntimeAlreadyCancelledDoesNotStart(t *testing.T) {
-	_, log := promptPiFixture(t)
+	_, log := promptEnabledPiFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := CheckPromptContext(ctx, PromptChange{Name: "d"}); err != nil {

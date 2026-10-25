@@ -2,7 +2,7 @@
 
 This record supplements the [Library contract](subsystems/library.md#prompt-templates)
 and the [earlier native verification](pi-prompt-verification.md). It records the
-`bugfix/harness-prompt-availability` work on 2026-10-23 and 2026-10-24; cross-platform builds do
+`bugfix/harness-prompt-availability` work on 2026-10-23 through 2026-10-26; cross-platform builds do
 not constitute runtime acceptance outside Windows.
 
 ## Original evidence and failure-first changes
@@ -361,6 +361,90 @@ not tested. The failed-group fixture proves that fixture is blocked, not every
 possible non-active group state. Live group source coverage does not prove the
 state of disposed or never-created Fibers. Historical concurrency and routing
 limitations recorded above remain outside this change.
+
+## 2026-10-25–26: explicit activation and recent inventory evidence
+
+The accepted interaction separates activating prompt templates (check all
+installed supported Harnesses) from adding one template's Harness selection
+(check that target only). Successful evidence is reused within this process;
+manual refresh forces a new check. Reading, saving, syncing and deselecting do
+not start native prompt checks. Empty libraries default off; legacy libraries
+with templates default on. Closing the switch retains bodies and selections,
+and retires unchanged managed deployments. Codex body/policy external edits
+keep the whole deployment together.
+
+Sol medium established public API failures before each implementation slice:
+the missing total switch and endpoint, activation not checking installed
+Harnesses independently, targeted checks starting unrelated Harnesses, missing
+cache reuse/timestamps, and global refresh requiring a template name. The
+corresponding focused tests then passed. These observations are native-protocol
+fixtures unless explicitly marked as original-Harness checks below.
+
+Codex now performs one native inventory enumeration per context. Tests first
+failed when unrelated large assets exhausted its byte budget, DSH-only resource
+edits invalidated Codex, and saving a managed template invalidated its own
+evidence. Those slices passed after narrowing the stamp. The
+`TestPromptTemplatesCodexSkillAssetsAreNotAdditionalSkillDeclarations` fixture
+first returned unverified for a malformed example nested inside a valid skill's
+assets; using the native inventory without a second static declaration scan
+passed in 1.93 seconds. These are recent-inventory guarantees, not a claim of
+stable discovery across two native boots or future model invocation.
+
+Deterministic browser tests held and released responses to reproduce cancellation
+loss after an added target's HTTP failure and a stale all-target response
+revoking a newer successful target selection. Both passed after the queue and
+per-target response-version fixes. Separate failures established the need for
+explicit `force:true` on manual checks and an event-time refresh guard while
+target writes are pending. No timing sleeps establish those request orderings.
+
+The Windows original-DSH check
+`TestPromptTemplatesOriginalDSHPassiveEvidenceDoesNotRereadModuleBytes` first
+failed in 72.33 seconds after a successful isolated native inventory: a Windows
+byte-range lock on a test-owned plugin module still allowed metadata reads, but
+passive checking reopened its bytes and discarded the result. With active deep
+verification retained and passive evidence using a declaration/source-identity
+stamp, it passed in 66.80 seconds and retained `checkedAt`. Original user
+configuration was not loaded or changed. This does not prove detection of module
+edits preserving size and mtime.
+
+The limited Go regression exposed two additional failures: restoring a deselected
+Codex deployment lost its evidence because of leftover empty directories, and
+deleting an externally edited template kept hiding the retained user skill.
+After their fixes, split legacy CLI/Desktop ownership remained protected on
+close and was released as a group on deletion. A further Windows file-sharing
+lock test first failed in 6.718 seconds: removal retained an unreadable policy,
+but subsequent sync could not retire it after unlocking. Distinguishing read
+failure from confirmed external edits made that retry pass.
+
+`go test -tags nogui ./internal/library -run '^TestPromptTemplate' -count=1 -v`
+passed 98 top-level tests with 26 opt-in skips and no failures in 318.409 seconds.
+That run preceded the final read-error distinction; the final retirement impact
+group then passed all five tests in 23.361 seconds, including the new Windows
+lock case, split ownership, deletion, legacy merging and setup restoration.
+The three `TestPromptTemplatesAPI` tests passed in 3.197 seconds. Windows and
+Linux amd64 Library package vet/build, changed-file formatting and diff checks
+passed. Race checking was unavailable because CGO was disabled and no C compiler
+was installed; no dependency was installed to change that environment.
+
+The final limited browser regression passed 36 tests across Chromium/WebKit and
+five languages in 86.081 seconds, plus all five translation-key checks in 33.066
+seconds. It also retained existing 420/560/1100-pixel inline hint alignment,
+non-overlap and horizontal-overflow assertions. Six related JavaScript files
+passed syntax checks. No new screenshot was produced.
+
+The final nogui binary passed the original-Codex public API acceptance in
+9.840 seconds: default off, passive disabled, explicit activation, check, save,
+then CLI invocation of that same deployment. Four loopback-model cases passed,
+including explicit body expansion and ordinary chat without the body. The
+binary SHA256 was
+`58D828EC6CDC2CD4A0A9E6FD913EEBE6F4C78F92590D7297633B0729AA2654C6`.
+The original CLI and three selected original configuration file fingerprints
+were unchanged. This is a limited file audit, not a whole-installation diff.
+
+This change does not modify Harness programs, user configuration, dependencies
+or plugins. Full repository regression is explicitly excluded by the requested
+test scope; earlier full-suite/native invocation evidence above remains
+historical, not evidence of rerunning those checks for this change.
 
 ## Reproduce opt-in native checks
 
