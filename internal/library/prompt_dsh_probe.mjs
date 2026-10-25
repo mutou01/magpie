@@ -1,10 +1,11 @@
 // Separate client of the original installation. Never patches a module,
 // replaces a registry method, installs a plugin or submits an Agent input.
-import { createRequire } from 'node:module';
-import { pathToFileURL } from 'node:url';
+import { createRequire, isBuiltin } from 'node:module';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dirname, resolve, join, isAbsolute, relative } from 'node:path';
 import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync, lstatSync, statSync, readlinkSync, mkdirSync, symlinkSync } from 'node:fs';
 import { randomUUID, createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 let input = '';
 for await (const chunk of process.stdin) input += chunk;
 const request = JSON.parse(input);
@@ -164,10 +165,39 @@ try {
     resolvedProfile: { profile, installAnchor: anchor }, patchFiles: [],
     args: ['--host', '127.0.0.1', '--port', '0', '--no-open'] });
   const { ctx } = runtime;
+  const emptyAttributes = attributes => attributes && typeof attributes === 'object' && Reflect.ownKeys(attributes).length === 0;
+  const observeFailure = entry => {
+    if (entry.fiber !== undefined || entry.disabled) return;
+    const loader = ctx.loader.internal;
+    if (typeof loader?.resolveSync !== 'function' || typeof loader.loadCache?.get !== 'function') return;
+    const base = entry.parent.tree.ctx.baseUrl;
+    const resolved = typeof loader.getOrCreateModuleJob === 'function'
+      ? loader.resolveSync(base, { specifier: entry.options.name, attributes: {}, phase: 2 })
+      : typeof loader.getModuleJobForImport === 'function'
+        ? loader.resolveSync(entry.options.name, base, {}) : undefined;
+    if (typeof resolved?.url !== 'string' || resolved.importAttributes !== undefined && !emptyAttributes(resolved.importAttributes)) return;
+    const job = loader.loadCache.get(resolved.url);
+    if (!job || job.url !== resolved.url || !emptyAttributes(job.importAttributes) || typeof job.instantiated?.then !== 'function' || job.module?.getStatus?.() !== 0) return;
+    return { loader, job, module: job.module, promise: job.instantiated, url: resolved.url,
+      id: entry.id, name: entry.options.name, options: structuredClone(entry.options), parent: entry.parent, tree: entry.parent.tree, base };
+  };
+  // Native HMR may replace failed jobs as soon as readiness is committed.
+  // Retain the startup job before yielding; observe its existing rejection only.
+  const startupFailures = new Map();
+  for (const entry of ctx.loader.entries()) {
+    const observed = observeFailure(entry);
+    if (!observed) continue;
+    startupFailures.set(entry, observed);
+    observed.promise.then(undefined, error => { observed.stack = error?.stack; });
+  }
   const { SkillRegistry } = await native('@deepseek-ai/dsh-skill');
   const { scopeOf, ScopedLayers, NamedEntries } = await native('@deepseek-ai/dsh-scope');
   const { FileSystemSkillProvider } = await native('@deepseek-ai/dsh-skill-filesystem');
   const { readPluginInventory } = await native('@deepseek-ai/dsh-host-plugin-inventory');
+  const { EntryTree, Group } = await native('@deepseek-ai/cordis-plugin-loader');
+  const warnings = new Map();
+  const linkErrors = new Map();
+  let stderrHash;
   const recordedPackages = new Set();
   const recordAliases = (name, base) => {
     // Node's original search paths retain the declarations that can retarget
@@ -220,6 +250,10 @@ try {
       if (typeof ctx.loader.builtins.include !== 'function') fail('Native include implementation is unavailable');
       specifier = '@deepseek-ai/dsh-app-boot';
       base = pathToFileURL(anchor).href;
+    } else if (specifier === 'cordis:group') {
+      if (typeof Group !== 'function' || ctx.loader.builtins.group !== Group) fail('Native group implementation is unavailable');
+      specifier = '@deepseek-ai/cordis-plugin-loader';
+      base = pathToFileURL(anchor).href;
     }
     const pkg = ctx.pluginPackages.packageOf(specifier, base);
     if (!pkg) fail('Native plugin source is unresolved' + (/^[@a-z0-9_:/.-]+$/i.test(specifier) ? ': ' + specifier : ''));
@@ -230,10 +264,86 @@ try {
     // between two separate native launches and again before accepting evidence.
     recordedModules.add(key);
   };
+  // An import error's text alone cannot distinguish failed ESM linking from
+  // plugin code throwing the same SyntaxError after evaluation has started.
+  // Inspect only the original loader's already-started job, never run a new job.
+  const proveLinkFailure = async (entry, observed) => {
+    if (entry.fiber !== undefined || entry.disabled || entry.parent.tree.import !== EntryTree.prototype.import) return;
+    if (!observed || entry.id !== observed.id || !isDeepStrictEqual(entry.options, observed.options) || entry.options.name !== observed.name ||
+        entry.parent !== observed.parent || entry.parent.tree !== observed.tree || entry.parent.tree.ctx.baseUrl !== observed.base || ctx.loader.internal !== observed.loader) return;
+    const { job } = observed;
+    if (job.module !== observed.module || job.instantiated !== observed.promise || job.module?.getStatus?.() !== 0) return;
+    let diagnostic, rejection;
+    try { await job.instantiated; }
+    catch (error) { rejection = error; diagnostic = dependencyDiagnostic(error, entry.options.name); }
+    if (diagnostic?.kind !== 'export') return;
+    const seen = new Set(), pending = [job], graph = [];
+    let edges = 0;
+    while (pending.length) {
+      const current = pending.pop();
+      if (seen.has(current)) continue;
+      seen.add(current);
+      if (seen.size > 10000 || typeof current?.url !== 'string' || !current.module ||
+          typeof current.module.getModuleRequests !== 'function') fail('Native failed-module dependency graph is unavailable');
+      const requests = current.module.getModuleRequests();
+      if (!Array.isArray(requests) || requests.length > 10000 || requests.some(request => request.phase !== 2 || typeof request.specifier !== 'string' || !emptyAttributes(request.attributes))) fail('Native failed-module dependency requests are incomplete');
+      let hash;
+      if (current.url.startsWith('file:')) {
+        const file = realpathSync(fileURLToPath(current.url));
+        sources.add(file);
+        hash = digest(file);
+      }
+      else if (!current.url.startsWith('node:')) fail('Native failed-module source is unverifiable');
+      for (const request of requests) {
+        const specifier = request.specifier;
+        if (isBuiltin(specifier) || specifier.startsWith('.') || specifier.startsWith('file:')) continue;
+        const pkg = ctx.pluginPackages.packageOf(specifier, current.url);
+        if (!pkg || !current.url.startsWith('file:')) fail('Native failed-module package source is unverifiable');
+        recordAliases(pkg.name, dirname(fileURLToPath(current.url)));
+        recordModule(specifier, current.url);
+      }
+      const linked = await current.linked;
+      if (!Array.isArray(linked) || linked.length > 10000 || (edges += linked.length) > 50000) fail('Native failed-module dependency graph is incomplete');
+      graph.push({ url: current.url, hash, requests, linked: linked.map(child => child?.url) });
+      for (const child of Array.from(linked)) {
+        if (!child || typeof child !== 'object' || typeof child.then === 'function') fail('Native failed-module dependency job is unavailable');
+        pending.push(child);
+      }
+    }
+    if (entry.fiber !== undefined || entry.disabled || job.module !== observed.module || job.instantiated !== observed.promise) fail('Native optional plugin changed during verification');
+    if (!(rejection instanceof Error) || rejection.cause !== undefined || rejection instanceof AggregateError || typeof rejection.stack !== 'string' || !rejection.stack) fail('Native optional plugin diagnostic is unavailable');
+    return { diagnostic, rejection, graph: JSON.stringify(graph.sort((a, b) => a.url.localeCompare(b.url))) };
+  };
+  const startupProofs = new Map();
+  const optionalLinkFailure = async entry => {
+    const initial = startupFailures.get(entry);
+    if (!initial) return;
+    if (!startupProofs.has(entry)) startupProofs.set(entry, await proveLinkFailure(entry, initial));
+    const startup = startupProofs.get(entry), observed = observeFailure(entry);
+    const current = await proveLinkFailure(entry, observed);
+    if (!startup || !current || initial.url !== observed.url || startup.graph !== current.graph ||
+        JSON.stringify(startup.diagnostic) !== JSON.stringify(current.diagnostic)) return;
+    if (observed.loader.loadCache.get(observed.url) !== observed.job) fail('Native optional plugin changed during verification');
+    if (typeof initial.stack !== 'string' || !initial.stack) fail('Native startup diagnostic is unavailable');
+    linkErrors.set(current.rejection, initial.stack);
+    return current;
+  };
   const graph = async () => {
+    if (typeof boot.auditStartupEntries !== 'function') fail('Native startup audit is unavailable');
     const resolution = ctx.pluginPackages?.resolution;
     if (!Array.isArray(resolution?.entries) || !Array.isArray(resolution.linkedRoots)) fail('Native package resolution is unavailable');
-    for (const entry of ctx.loader.entries()) if (!entry.options.group && !entry.disabled) recordModule(entry.options.name, entry.parent.tree.ctx.baseUrl);
+    for (const entry of ctx.loader.entries()) if (!entry.disabled) recordModule(entry.options.name, entry.parent.tree.ctx.baseUrl);
+    // Standing preset trees are deliberately detached from the host tree,
+    // and their public composition inventory omits groups. Original runtime
+    // fibers retain each live group's actual Entry and resolution base.
+    if (typeof ctx.registry?.values !== 'function') fail('Native plugin runtime inventory is unavailable');
+    for (const plugin of ctx.registry.values()) {
+      if (typeof plugin.fibers?.[Symbol.iterator] !== 'function') fail('Native plugin fiber inventory is unavailable');
+      for (const fiber of plugin.fibers) {
+        const entry = fiber.entry;
+        if (entry?.fiber === fiber && entry.options.group && !entry.disabled) recordModule(entry.options.name, entry.parent.tree.ctx.baseUrl);
+      }
+    }
     for (const preset of ctx.agentPresets.inspectCompositions()) {
       if (preset.leakedServices.length) fail('Native preset leaked services outside its scope');
       for (const module of preset.modules) recordModule(module.moduleName, module.useHostBase ? ctx.baseUrl : module.baseUrl);
@@ -241,19 +351,55 @@ try {
     const inventory = await readPluginInventory(ctx);
     if (!Array.isArray(inventory.entries) || !Array.isArray(inventory.agentPresets)) fail('Native plugin graph is incomplete');
     const running = rows => rows.every(row => typeof row.enabled === 'boolean' && (!row.enabled || row.fiberPhase === 'active'));
-    if (!running(inventory.entries) || inventory.agentPresets.some(p => p.broken || !running(p.rows))) {
-      const inactive = new Set(inventory.entries.filter(row => row.enabled && row.fiberPhase !== 'active').map(row => row.entryId));
-      for (const entry of ctx.loader.entries()) {
-        if (!inactive.has(entry.id)) continue;
-        try { await entry.parent.tree.import(entry.options.name); }
-        catch (error) {
-          const diagnostic = dependencyDiagnostic(error, entry.options.name);
-          if (diagnostic) { error.inventoryDiagnostic = diagnostic; throw error; }
-        }
-      }
+    if (inventory.agentPresets.some(p => p.broken || !running(p.rows))) {
       fail('Native plugin graph contains an inactive or unresolved entry');
     }
+    const optional = [], failures = [];
+    for (const row of inventory.entries) {
+      if (row.enabled === false || row.enabled === true && row.fiberPhase === 'active') continue;
+      const entry = [...ctx.loader.entries()].find(entry => entry.id === row.entryId && entry.options.name === row.moduleName);
+      const proof = row.enabled === true && row.fiberPhase === null && entry ? await optionalLinkFailure(entry) : undefined;
+      if (!proof) {
+        if (entry) {
+          try { await entry.parent.tree.import(entry.options.name); }
+          catch (error) {
+            const diagnostic = dependencyDiagnostic(error, entry.options.name);
+            if (diagnostic) { error.inventoryDiagnostic = diagnostic; throw error; }
+          }
+        }
+        fail('Native plugin graph contains an inactive or unresolved entry');
+      }
+      const { diagnostic, rejection } = proof;
+      failures.push(rejection);
+      optional.push({ entryId: row.entryId, ...diagnostic });
+      warnings.set(JSON.stringify(diagnostic), diagnostic);
+    }
+    let audit = '';
+    await boot.auditStartupEntries(ctx, 'dsh', text => { audit += text; });
+    if (failures.length) {
+      // Retain the original audit's formatting and every byte. Only restore
+      // the same cached errors' pre-audit stacks in that generated text.
+      const stacks = new Map();
+      for (const error of failures) {
+        const current = error.stack, original = linkErrors.get(error);
+        if (typeof current !== 'string' || !current) fail('Native optional plugin diagnostic changed');
+        const previous = stacks.get(current);
+        if (previous && previous.original !== original) fail('Native optional plugin diagnostic is ambiguous');
+        stacks.set(current, { original, count: (previous?.count ?? 0) + 1 });
+      }
+      for (const current of stacks.keys()) {
+        if ([...stacks.keys()].some(other => other !== current && other.includes(current))) fail('Native optional plugin diagnostic is ambiguous');
+      }
+      for (const [current, { original, count }] of stacks) {
+        if (audit.split(current).length !== count + 1) fail('Native optional plugin diagnostic is incomplete');
+        audit = audit.replaceAll(current, () => original);
+      }
+      const hash = createHash('sha256').update(audit).digest('hex');
+      if (stderrHash !== undefined && stderrHash !== hash) fail('Native startup diagnostic changed during verification');
+      stderrHash = hash;
+    } else if (audit) fail('Native startup diagnostic is unverified');
     return JSON.stringify({ entries: inventory.entries.map(({ entryId, moduleName, enabled, fiberPhase }) => ({ entryId, moduleName, enabled, fiberPhase })),
+      optional,
       presets: inventory.agentPresets.map(({ id, isDefault, rows }) => ({ id, isDefault, rows })),
       packages: resolution.entries.map(({ name, packageDir, version, scope }) => ({ name, packageDir: realpathSync(packageDir), version, scope })) });
   };
@@ -349,7 +495,7 @@ try {
   verifyCopies();
   if (realpathSync(join(request.home, 'profiles/node_modules')) !== realpathSync(join(request.sourceHome, 'profiles/node_modules'))) fail('Native dependency link changed during verification');
   result = { commands: commands.map(command => ({ ...command, path: command.path ? originalSource(command.path) : '' })),
-    sources: [...new Set([...sources].map(originalSource))].sort(), complete: true };
+    sources: [...new Set([...sources].map(originalSource))].sort(), warnings: [...warnings.values()], stderrHash, complete: true };
 } catch (error) {
   // Arbitrary startup errors/logs may contain credentials; never forward them.
   const diagnostic = error.inventoryDiagnostic ?? error.entries?.map(entry => dependencyDiagnostic(entry.outcome?.error, entry.module)).find(Boolean);

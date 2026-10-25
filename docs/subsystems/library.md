@@ -192,13 +192,38 @@ No Agent input or model request is submitted by this check.
 
 Because the remote skill list drops completeness, the client verifies the
 original registry/provider classes through read-only structural capabilities.
-Missing layouts, runtime registrations, unknown providers, incomplete snapshots
-or inactive/unresolved plugin graphs remain unverified.
+Missing layouts, runtime registrations, unknown providers and incomplete
+snapshots remain unverified. The original `auditStartupEntries` must accept the
+host graph; required startup failures, broken presets and inactive module rows
+reported by the native preset inventory still block verification.
 For a native module-resolution failure, the reason can name the failed plugin
 and missing dependency, after validating package-name syntax. A native missing
 named-export error also identifies the dependency and export, with bounded
-package names and an ASCII JavaScript identifier. Both failures remain
-unverified; arbitrary errors and raw startup logs are never forwarded.
+package names and an ASCII JavaScript identifier. Missing dependencies remain
+unverified. A narrowly verified optional host failure can instead accompany an
+available/enabled template as a warning: the original Entry has no Fiber, uses
+the original tree importer, and its already-started native ESM job has a rejected
+instantiation promise with that exact missing-export diagnostic. A successful
+instantiation followed by a throwing module cannot qualify, even if it throws
+the same message. Missing introspection capabilities remain blocking; the client
+never starts a replacement module job to manufacture evidence.
+The failed job's complete linked graph must have readable file/builtin sources
+and evaluation-phase requests only. Its plugin, dependencies and source aliases
+remain in the byte fingerprint. The accepted warnings are compared with commands
+and sources across both native launches, and the template state displays warnings
+from the same accepted snapshot used for its conflict check. This verifies the
+currently effective namespace, not the failed optional plugin's functionality.
+Unknown failures, runtime failures and raw startup logs are never passed through
+as nonblocking warnings.
+The complete stderr bytes must match the original startup audit's warning hash.
+The client retains startup jobs before yielding: native HMR can replace a failed
+job after readiness. Both the retained and current jobs must independently prove
+the same static-link failure, Entry identity, resolved URL, complete dependency
+graph and source bytes. The client asks the original audit to render the proven
+errors, restoring only the associated startup stacks in that text because Cordis
+can shorten stacks on another import. It never changes the Error or the logger.
+Ambiguous stacks, additional stderr and changed audit output remain blocking;
+only validated package/export names reach the template's warning fields.
 Filesystem providers must retain the original class and discovery methods;
 subclasses or per-instance method replacements cannot certify completeness.
 They contribute every native root, including empty/missing roots. The Windows ACL
@@ -207,7 +232,16 @@ the stable installed paths, never random derived paths. The loaded ACL body and
 invocation metadata must also agree with the original packaged skill, including
 when another plugin claims the ACL provider name. Active plugin/preset
 implementations and their declared runtime dependency resources join the content
-fingerprint, including wildcard publications and dependency resolution aliases.
+fingerprint, including host and retained preset group implementations, wildcard
+publications and dependency resolution aliases. The native `cordis:group`
+implementation must match the original loader's exported `Group`; its owning
+package is fingerprinted.
+Preset groups come from the original runtime registry's live Fibers and their
+directly owned Entries because the composition inventory omits groups and their
+standing trees are detached from the host tree. Their actual declaring bases
+are used; configuration text is never used to guess a resolution base.
+This source collection covers live, directly owned group Fibers; it does not
+establish the state of a group whose Fiber was never created or was disposed.
 Retargeting an alias invalidates evidence even when the old physical resources
 and manifest bytes remain unchanged. Graph and registry revision must remain
 stable across each query.

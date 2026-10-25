@@ -16,17 +16,17 @@ func TestPromptTemplateOriginalDSHMissingExportDiagnostic(t *testing.T) {
 	isolated, plugin := originalDSHExportFixture(t)
 	write(t, filepath.Join(plugin, "index.mjs"), "import { settingsNamespace } from '@deepseek-ai/dsh-settings';\nexport function apply() { return settingsNamespace('fixture'); }\n")
 	state := checkDSHExportFixture(t)
-	if state.Status != "unverified" || state.Reason != "DeepSeek Harness plugin requires an export unavailable in the installed dependency" || state.Source != "magpie-missing-export-fixture: @deepseek-ai/dsh-settings (settingsNamespace)" {
-		t.Fatalf("missing native export must block deployment with an actionable safe diagnostic: %+v", state)
+	if state.Status != "available" || state.Reason != "DeepSeek Harness plugin requires an export unavailable in the installed dependency" || state.Source != "magpie-missing-export-fixture: @deepseek-ai/dsh-settings (settingsNamespace)" {
+		t.Fatalf("optional missing native export must preserve availability with an actionable safe warning: %+v", state)
 	}
 	if _, err := os.Stat(filepath.Join(isolated, "skills/audit-code/SKILL.md")); !os.IsNotExist(err) {
-		t.Fatal("availability check deployed a blocked template", err)
+		t.Fatal("availability check unexpectedly deployed a template", err)
 	}
 	// Repair only this test's plugin. A fresh public check must detect the
-	// changed source and recover without broadening the graph acceptance rule.
+	// changed source and clear the warning without changing availability.
 	write(t, filepath.Join(plugin, "index.mjs"), "export function apply() {}\n")
 	state = checkDSHExportFixture(t)
-	if state.Status != "available" {
+	if state.Status != "available" || state.Reason != "" || state.Source != "" {
 		t.Fatalf("repaired native plugin must restore availability: %+v", state)
 	}
 }
@@ -71,8 +71,8 @@ func TestPromptTemplateOriginalDSHConfiguredMissingExportDiagnostic(t *testing.T
 		before[rel] = promptHash(b)
 	}
 	state := checkDSHExportFixture(t)
-	if state.Status != "unverified" || state.Reason != "DeepSeek Harness plugin requires an export unavailable in the installed dependency" || state.Source != expected {
-		t.Fatalf("configured missing export must remain blocked with its safe diagnostic: %+v", state)
+	if state.Status != "available" || state.Reason != "DeepSeek Harness plugin requires an export unavailable in the installed dependency" || state.Source != expected {
+		t.Fatalf("configured optional missing export must preserve availability with its safe warning: %+v", state)
 	}
 	for rel, sum := range before {
 		b, err := os.ReadFile(filepath.Join(dir, rel))
@@ -80,7 +80,7 @@ func TestPromptTemplateOriginalDSHConfiguredMissingExportDiagnostic(t *testing.T
 			t.Fatalf("original configured resource changed: %s", rel)
 		}
 	}
-	t.Log("Original configuration and failing plugin fingerprints unchanged; deployment remains blocked")
+	t.Log("Original configuration and failing plugin selected fingerprints unchanged; effective namespace remains available")
 }
 
 func originalDSHExportFixture(t *testing.T) (string, string) {

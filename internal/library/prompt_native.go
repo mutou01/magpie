@@ -29,11 +29,12 @@ type nativePromptCommand struct {
 }
 
 type nativePromptCheck struct {
-	key      string
-	roots    []string
-	commands []nativePromptCommand
-	notices  []codexPromptNotice
-	err      error
+	key         string
+	roots       []string
+	commands    []nativePromptCommand
+	notices     []codexPromptNotice
+	dshWarnings []string
+	err         error
 }
 
 var nativePromptChecks = struct {
@@ -317,7 +318,7 @@ func (l *Library) promptResourceKey(t PromptTarget, bin string, dirs, roots []st
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func (l *Library) nativePromptConflict(t PromptTarget, p *Prompt) (string, error) {
+func (l *Library) nativePromptConflict(t PromptTarget, p *Prompt) (string, []string, error) {
 	k := nativePromptCacheKey(t)
 	nativePromptChecks.Lock()
 	c, ok := nativePromptChecks.m[k]
@@ -327,16 +328,16 @@ func (l *Library) nativePromptConflict(t PromptTarget, p *Prompt) (string, error
 		nativePromptChecks.Lock()
 		delete(nativePromptChecks.m, k)
 		nativePromptChecks.Unlock()
-		return "", err
+		return "", nil, err
 	}
 	if !ok || c.key != s.key {
 		nativePromptChecks.Lock()
 		delete(nativePromptChecks.m, k)
 		nativePromptChecks.Unlock()
-		return "", &promptRuntimeError{"Check native command availability again", t.Name}
+		return "", nil, &promptRuntimeError{"Check native command availability again", t.Name}
 	}
 	if c.err != nil {
-		return "", c.err
+		return "", nil, c.err
 	}
 	for _, cmd := range c.commands {
 		if promptKey(cmd.Name) != promptKey(p.Name) {
@@ -346,24 +347,24 @@ func (l *Library) nativePromptConflict(t PromptTarget, p *Prompt) (string, error
 			files, _ := t.files(p, "")
 			for path := range files {
 				if promptSamePath(path, cmd.Path) {
-					return "", &promptRuntimeError{"This skill is disabled in Codex configuration", cmd.Path}
+					return "", nil, &promptRuntimeError{"This skill is disabled in Codex configuration", cmd.Path}
 				}
 			}
 		}
 		if cmd.managed || cmd.Path != "" && l.promptOwns(t.ID, p.ID, cmd.Path) {
 			for _, notice := range c.notices {
 				if notice.SkillPath != "" && promptSamePath(notice.SkillPath, cmd.Path) {
-					return "", &promptRuntimeError{"Native skill metadata could not be loaded; invocation policy is unverified", notice.Source}
+					return "", nil, &promptRuntimeError{"Native skill metadata could not be loaded; invocation policy is unverified", notice.Source}
 				}
 			}
 			continue
 		}
 		if cmd.Path != "" {
-			return cmd.Path, nil
+			return cmd.Path, nil, nil
 		}
-		return t.Name + " /" + cmd.Name, nil
+		return t.Name + " /" + cmd.Name, nil, nil
 	}
-	return "", nil
+	return "", c.dshWarnings, nil
 }
 
 func (l *Library) checkNativePromptCommands(ctx context.Context, t PromptTarget) {
@@ -383,17 +384,18 @@ func (l *Library) checkNativePromptCommands(ctx context.Context, t PromptTarget)
 		// This budget includes two isolated native boots and a full content
 		// fingerprint of the active dependency graph between them.
 		step, cancel := context.WithTimeout(ctx, 90*time.Second)
-		var first []nativePromptCommand
-		first, c.roots, c.err = readDSHPromptCommands(step, t, s)
+		var first, current dshPromptInventory
+		first, c.err = readDSHPromptInventory(step, t, s)
+		c.roots = first.Sources
 		if c.err == nil {
 			s, c.err = l.nativePromptSnapshot(t, c.roots)
 			c.key = s.key
 			if c.err == nil {
-				var roots []string
-				c.commands, roots, c.err = readDSHPromptCommands(step, t, s)
+				current, c.err = readDSHPromptInventory(step, t, s)
+				c.commands, c.dshWarnings = current.Commands, current.Warnings
 				before, _ := json.Marshal(first)
-				after, _ := json.Marshal(c.commands)
-				if c.err == nil && (string(before) != string(after) || !slices.Equal(c.roots, roots)) {
+				after, _ := json.Marshal(current)
+				if c.err == nil && string(before) != string(after) {
 					c.err = &promptRuntimeError{"Native command sources changed during verification", t.Name}
 				}
 			}

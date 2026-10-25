@@ -12,15 +12,19 @@ import { randomUUID, createHash } from 'node:crypto';
 assert.equal(process.platform, 'win32');
 const entry = realpathSync(resolve(process.argv[2]));
 const sourceHome = resolve(process.argv[3]);
+const preserveProfile = process.argv[7] === '--preserve-profile';
 const deployed = process.argv[4] ? readFileSync(resolve(process.argv[4])) : undefined;
 const marker = deployed ? process.argv[5] : 'MAGPIE_UNIQUE_BODY_' + randomUUID();
 assert.equal(typeof marker, 'string');
 assert(marker.length > 0 && (!deployed || deployed.toString('utf8').includes(marker)));
-const root = mkdtempSync(join(tmpdir(), 'magpie-dsh-invocation-'));
-const work = join(root, 'work');
-mkdirSync(work);
+const evidence = mkdtempSync(join(tmpdir(), 'magpie-dsh-invocation-'));
+// Configured acceptance invokes the same isolated home that Check and Save
+// accepted; only the model overlay differs, and it is an explicit last layer.
+const root = preserveProfile ? sourceHome : evidence;
+const work = preserveProfile ? process.cwd() : join(root, 'work');
+if (!preserveProfile) mkdirSync(work);
 const originals = [entry, join(dirname(entry), 'profile-boot.js'),
-  ...['profiles/web/package.json', 'profiles/web/cordis.patch.yml', 'cordis.patch.yml'].map(p => join(sourceHome, p))];
+  ...['profiles/web/package.json', 'profiles/web/compatibility.json', 'profiles/web/cordis.patch.yml', 'cordis.patch.yml', '.env'].map(p => join(sourceHome, p))];
 const sourceRoots = process.argv[6] ? JSON.parse(readFileSync(resolve(process.argv[6]), 'utf8')) : [];
 assert(Array.isArray(sourceRoots) && sourceRoots.every(p => typeof p === 'string' && isAbsolute(p)));
 const stamp = () => {
@@ -51,15 +55,17 @@ const stamp = () => {
 const before = stamp();
 const write = (p, body) => { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, body); };
 process.env.DSH_HOME = root;
-process.env.DSH_AGENTS_HOME = join(root, 'agents');
+if (!preserveProfile) process.env.DSH_AGENTS_HOME = join(root, 'agents');
 process.env.MAGPIE_DSH_FIXTURE_KEY = 'fixture';
 process.chdir(work);
 const resolvers = [createRequire(join(dirname(entry), '../package.json'))];
+const nativePaths = new Map();
 async function native(name) {
   for (const require of resolvers) {
     let p;
     try { p = require.resolve(name); } catch { continue; }
     resolvers.push(createRequire(p));
+    nativePaths.set(name, realpathSync(p));
     return import(pathToFileURL(p).href);
   }
   throw new Error('Required original native module is unavailable');
@@ -71,9 +77,17 @@ const server = createServer(async (req, res) => {
   received.push(JSON.parse(text));
   res.writeHead(200, { 'content-type': 'text/event-stream' });
   const callSkill = requestSkill && received.length === 1;
+  const offered = received.at(-1).tools ?? [];
+  const ptc = !offered.some(tool => tool.function?.name === 'skill')
+    && offered.some(tool => tool.function?.name === 'run_code');
   const response = callSkill
     ? [[{ role: 'assistant', tool_calls: [{ index: 0, id: 'load-fixture', type: 'function',
-      function: { name: 'skill', arguments: JSON.stringify({ name: 'audit-code' }) } }] }, null], [{}, 'tool_calls']]
+      function: ptc
+        ? { name: 'run_code', arguments: JSON.stringify({
+          code: "try { console.log(await tools.skill({ name: 'audit-code' })); } catch (error) { console.log(String(error)); }",
+          description: 'Attempt the native explicit-only skill policy check',
+        }) }
+        : { name: 'skill', arguments: JSON.stringify({ name: 'audit-code' }) } }] }, null], [{}, 'tool_calls']]
     : [[{ role: 'assistant', content: 'OK' }, null], [{}, 'stop']];
   for (const [delta, finish_reason] of response) {
     res.write(`data: ${JSON.stringify({ id: 'fixture', object: 'chat.completion.chunk', created: 1,
@@ -88,10 +102,13 @@ try {
   const boot = await native('@deepseek-ai/dsh-app-boot');
   const { runProfile } = await import(pathToFileURL(join(dirname(entry), 'profile-boot.js')).href);
   const profileDir = join(root, 'profiles/web');
-  write(join(profileDir, 'package.json'), JSON.stringify({ dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'] } } }));
-  const { symlinkSync } = await import('node:fs');
-  symlinkSync(join(sourceHome, 'profiles/node_modules'), join(root, 'profiles/node_modules'), 'junction');
-  write(join(profileDir, 'cordis.patch.yml'), `
+  if (!preserveProfile) {
+    write(join(profileDir, 'package.json'), JSON.stringify({ dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'] } } }));
+    const { symlinkSync } = await import('node:fs');
+    symlinkSync(join(sourceHome, 'profiles/node_modules'), join(root, 'profiles/node_modules'), 'junction');
+  }
+  const modelOverlay = preserveProfile ? join(evidence, 'model-overlay.yml') : join(profileDir, 'cordis.patch.yml');
+  write(modelOverlay, `
 - id: llm-pi-ai
   config:
     providers:
@@ -106,15 +123,34 @@ try {
   const profile = boot.loadProfileDirectory('dsh', profileDir, join(dirname(entry), '../package.json'));
   assert.equal(profile.skippedBundles.length, 0);
   runtime = await runProfile({ environment: boot.loadLayeredEnv('dsh'), profile: 'web',
-    resolvedProfile: { profile, installAnchor: join(dirname(entry), '../package.json') }, patchFiles: [],
+    resolvedProfile: { profile, installAnchor: join(dirname(entry), '../package.json') }, patchFiles: preserveProfile ? [modelOverlay] : [],
     args: ['--host', '127.0.0.1', '--port', '0', '--no-open'] });
   const { ctx } = runtime;
+  let retainedOptionalFailure;
+  if (preserveProfile) {
+    const failed = [...ctx.loader.entries()].filter(entry => entry.options.name === 'dsh-at-file' && !entry.disabled);
+    assert.equal(failed.length, 1, 'Configured failing optional plugin must remain enabled');
+    assert.equal(failed[0].fiber, undefined, 'Configured optional plugin must retain its original link failure');
+    await assert.rejects(failed[0].parent.tree.import(failed[0].options.name), error => error instanceof SyntaxError && error.message === "The requested module '@deepseek-ai/dsh-settings' does not provide an export named 'settingsNamespace'");
+    retainedOptionalFailure = 'dsh-at-file: @deepseek-ai/dsh-settings (settingsNamespace)';
+  }
   const { createUserMessage } = await native('@deepseek-ai/dsh-llm');
   const { installModelSelection } = await native('@deepseek-ai/dsh-agent');
-  const presets = await ctx.agentPresets.list();
-  const preset = presets.find(p => p.isDefault) ?? presets[0];
+  const { scopeOf } = await native('@deepseek-ai/dsh-scope');
+  const originalToolSkill = await native('@deepseek-ai/dsh-tool-skill');
+  const originalFilesystem = await native('@deepseek-ai/dsh-skill-filesystem');
+  const defaultId = ctx.agentPresets.defaultId;
+  assert.equal(typeof defaultId, 'string');
+  const presets = (await ctx.agentPresets.list()).map(preset => ({ ...preset, isDefault: preset.id === defaultId }));
+  let preset = presets.find(p => p.isDefault);
   assert(preset && !preset.broken);
-  write(join(root, 'skills/audit-code/SKILL.md'), deployed ?? `---\nname: audit-code\ndescription: Acceptance fixture\ndisable-model-invocation: true\nuser-invocable: true\n---\n${marker}\n`);
+  const invocationPresets = preserveProfile ? presets : [preset];
+  assert(invocationPresets.every(p => !p.broken));
+  if (preserveProfile) {
+    assert(deployed && readFileSync(join(root, 'skills/audit-code/SKILL.md')).equals(deployed), 'Invoke the unchanged publicly saved artifact in place');
+  } else write(join(root, 'skills/audit-code/SKILL.md'), deployed ?? `---\nname: audit-code\ndescription: Acceptance fixture\ndisable-model-invocation: true\nuser-invocable: true\n---\n${marker}\n`);
+  let scopeEvidence;
+  const presetResults = [];
   async function run(text, modelRequestsSkill = false) {
     received = [];
     requestSkill = modelRequestsSkill;
@@ -127,30 +163,91 @@ try {
     try {
       await handle.agent.whenIdle();
       assert.equal(received.length, 0, 'Creating an idle native Agent cannot submit a model request');
-      handle.agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }));
+      const snapshot = await ctx.skills.snapshot({ cwd: work, scope: scopeOf(handle.agent.ctx) });
+      const savedSkill = snapshot.skills.find(skill => skill.name === 'audit-code');
+      const composition = ctx.agentPresets.inspectCompositions().find(item => item.id === preset.id);
+      assert(composition, 'Every live preset must expose its original composition');
+      const hasOriginalModule = name => {
+        const modules = composition.modules.filter(module => module.moduleName === name);
+        for (const module of modules) {
+          const base = module.useHostBase ? ctx.baseUrl : module.baseUrl;
+          assert.equal(realpathSync(boot.resolvePluginResource(name, base)), nativePaths.get(name), 'The live composition must resolve the original installed module');
+        }
+        return modules.length > 0;
+      };
+      scopeEvidence = {
+        index: invocationPresets.indexOf(preset),
+        preset: ['standard', 'ptc', 'minimal', 'cordis'].includes(preset.id) ? preset.id : 'custom',
+        isDefault: !!preset.isDefault, skillToolVisible: !!ctx.tools.get('skill', handle.agent),
+        originalPluginRegistered: !!ctx.registry.get(originalToolSkill),
+        originalFilesystemRegistered: !!ctx.registry.get(originalFilesystem),
+        compositionHasOriginalModule: hasOriginalModule('@deepseek-ai/dsh-tool-skill'),
+        compositionHasOriginalFilesystem: hasOriginalModule('@deepseek-ai/dsh-skill-filesystem'),
+        snapshotComplete: snapshot.complete, savedMetadataPresent: !!savedSkill,
+        userInvocable: savedSkill?.invocation.userInvocable, modelInvocable: savedSkill?.invocation.modelInvocable,
+      };
+      const message = createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } });
+      if (text.startsWith('/audit-code ')) {
+        assert.equal(message.source.kind, 'user');
+        assert.equal(message.content.length, 1);
+        assert.equal(message.content[0].text, text);
+        assert(/(^|\s)\/([a-z0-9]+(?:-[a-z0-9]+)*)(?=\s|$)/g.test(message.content[0].text));
+      }
+      handle.agent.followup(message);
       await handle.agent.whenIdle();
+      if (!received.length) process.stderr.write(`MAGPIE_SAFE_NO_REQUEST ${JSON.stringify({ ...scopeEvidence, stage: modelRequestsSkill ? 'tool' : text.startsWith('/audit-code ') ? 'explicit' : text.includes('自行选择') ? 'implicit' : 'ordinary' })}\n`);
       assert(received.length > 0, 'Original Agent must contact the loopback model');
       return JSON.stringify(received);
     } finally { await handle.dispose(); }
   }
-  assert(!(await run('普通聊天：检查代码边界。')).includes(marker), 'Ordinary chat cannot load an explicit-only body');
-  const trailing = '用户后接指令_' + randomUUID();
-  const explicit = await run('/audit-code ' + trailing);
-  assert(explicit.includes('<skill_content name=\\"audit-code\\">'), 'Original host must expand the explicit gesture');
-  assert(explicit.includes(marker));
-  assert(explicit.includes(trailing), 'Trailing text remains a native user message');
-  assert(!(await run('请自行选择合适的技能。')).includes(marker), 'Implicit discovery cannot expose the body');
-  const attempted = await run('请自行加载 audit-code 技能。', true);
-  assert(received.length >= 2, 'A real model tool call must reach the native rejection path');
-  assert(received[0].tools?.some(tool => tool.function?.name === 'skill'), 'The native skill tool must be offered');
-  assert(attempted.includes('not available for model invocation'), 'The native handler must reject the model-requested load');
-  assert(!attempted.includes(marker), 'A model tool call cannot load an explicit-only body');
-  write(join(root, 'model-requested-load.json'), JSON.stringify(received, null, 2));
+  for (const currentPreset of invocationPresets) {
+    preset = currentPreset;
+    assert(!(await run('普通聊天：检查代码边界。')).includes(marker), 'Ordinary chat cannot load an explicit-only body');
+    const capabilities = { ...scopeEvidence };
+    assert(capabilities.snapshotComplete);
+    assert.equal(capabilities.skillToolVisible, capabilities.compositionHasOriginalModule);
+    assert.equal(capabilities.skillToolVisible, capabilities.compositionHasOriginalFilesystem);
+    assert.equal(capabilities.savedMetadataPresent, capabilities.compositionHasOriginalFilesystem);
+    if (capabilities.skillToolVisible) {
+      assert(capabilities.originalPluginRegistered && capabilities.originalFilesystemRegistered && capabilities.savedMetadataPresent);
+      assert.equal(capabilities.userInvocable, true);
+      assert.equal(capabilities.modelInvocable, false);
+    }
+    if (capabilities.isDefault) assert(capabilities.skillToolVisible, 'The default preset must provide native explicit skill invocation');
+    const trailing = '用户后接指令_' + randomUUID();
+    const explicit = await run('/audit-code ' + trailing);
+    if (!capabilities.skillToolVisible) {
+      assert(!explicit.includes(marker), 'A preset without the native skill plugin cannot load the body');
+      assert(explicit.includes('/audit-code ' + trailing), 'A preset without skill invocation must preserve the original slash text');
+      assert(!(await run('请自行选择合适的技能。')).includes(marker));
+      presetResults.push({ ...capabilities, ordinaryChat: 'pass', explicitInvocation: 'unsupported-preserved', trailingText: 'pass', noImplicitBody: 'pass', modelRequestedLoad: 'not-offered' });
+      process.stderr.write(`MAGPIE_SAFE_PRESET_RESULT ${JSON.stringify(presetResults.at(-1))}\n`);
+      continue;
+    }
+    if (!explicit.includes('<skill_content name=\\"audit-code\\">')) {
+      process.stderr.write(`MAGPIE_SAFE_EXPLICIT preset=${invocationPresets.indexOf(currentPreset)} body=${explicit.includes(marker)} trailing=${explicit.includes(trailing)} tag=${explicit.includes('<skill_content')}\n`);
+    }
+    assert(explicit.includes('<skill_content name=\\"audit-code\\">'), 'Original host must expand the explicit gesture');
+    assert(explicit.includes(marker));
+    assert(explicit.includes(trailing), 'Trailing text remains a native user message');
+    assert(!(await run('请自行选择合适的技能。')).includes(marker), 'Implicit discovery cannot expose the body');
+    const attempted = await run('请自行加载 audit-code 技能。', true);
+    assert(received.length >= 2, 'A real model tool call must reach the native rejection path');
+    assert(received[0].tools?.some(tool => ['skill', 'run_code'].includes(tool.function?.name)), 'The native skill route must be offered');
+    assert(attempted.includes('not available for model invocation'), 'The native handler must reject the model-requested load');
+    assert(!attempted.includes(marker), 'A model tool call cannot load an explicit-only body');
+    presetResults.push({ ...capabilities, ordinaryChat: 'pass', explicitInvocation: 'pass', trailingText: 'pass', noImplicitBody: 'pass', modelRequestedLoad: 'blocked' });
+    process.stderr.write(`MAGPIE_SAFE_PRESET_RESULT ${JSON.stringify(presetResults.at(-1))}\n`);
+  }
+  write(join(evidence, 'model-requested-load.json'), JSON.stringify(received, null, 2));
+  assert.equal(presetResults.filter(preset => preset.isDefault && preset.skillToolVisible).length, 1, 'The actual native default must complete the supported invocation path');
   report = { ordinaryChat: 'pass', explicitInvocation: 'pass', trailingText: 'pass', noImplicitBody: 'pass',
     modelRequestedLoad: 'blocked',
     deployedArtifactHash: deployed ? createHash('sha256').update(deployed).digest('hex') : undefined,
-    sourcesVerified: sourceRoots.length > 0,
-    modelEndpoint: 'loopback only', artifactDirectory: root };
+    sourcesVerified: sourceRoots.length > 0, preservedProfile: preserveProfile, retainedOptionalFailure, presetCount: invocationPresets.length,
+    supportedPresetCount: presetResults.filter(preset => preset.skillToolVisible).length,
+    unsupportedPresetCount: presetResults.filter(preset => !preset.skillToolVisible).length, presetResults,
+    modelEndpoint: 'loopback only', artifactDirectory: evidence };
 } finally {
   clearTimeout(timer);
   if (runtime) await runtime.shutdown.shutdown(0);

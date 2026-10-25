@@ -2,6 +2,7 @@ package library
 
 import (
 	"context"
+	"crypto/sha256"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -135,29 +136,59 @@ func dshPromptCopyProfile(dir, temp string) error {
 }
 
 func readDSHPromptCommands(ctx context.Context, t PromptTarget, s nativePromptSnapshot) ([]nativePromptCommand, []string, error) {
+	inventory, err := readDSHPromptInventory(ctx, t, s)
+	return inventory.Commands, inventory.Sources, err
+}
+
+type dshPromptInventory struct {
+	Commands []nativePromptCommand
+	Sources  []string
+	Warnings []string
+}
+
+func readDSHPromptInventory(ctx context.Context, t PromptTarget, s nativePromptSnapshot) (dshPromptInventory, error) {
 	// Each invoking directory needs its own native launch environment. Reusing
 	// a process would promote a previous project's dotenv values to inherited
 	// process values in the next context, changing both precedence and trust.
-	var commands []nativePromptCommand
-	var sources []string
+	var inventory dshPromptInventory
 	for _, cwd := range s.dirs {
 		if err := ctx.Err(); err != nil {
-			return nil, nil, err
+			return dshPromptInventory{}, err
 		}
-		found, roots, err := readDSHPromptContext(ctx, t, s, cwd)
+		found, err := readDSHPromptContextInventory(ctx, t, s, cwd)
 		if err != nil {
-			return nil, nil, err
+			return dshPromptInventory{}, err
 		}
-		commands = append(commands, found...)
-		sources = append(sources, roots...)
+		inventory.Commands = append(inventory.Commands, found.Commands...)
+		inventory.Sources = append(inventory.Sources, found.Sources...)
+		inventory.Warnings = append(inventory.Warnings, found.Warnings...)
 	}
-	slices.Sort(sources)
-	return commands, slices.Compact(sources), nil
+	slices.Sort(inventory.Sources)
+	inventory.Sources = slices.Compact(inventory.Sources)
+	slices.Sort(inventory.Warnings)
+	inventory.Warnings = slices.Compact(inventory.Warnings)
+	return inventory, nil
 }
 
-func readDSHPromptContext(ctx context.Context, t PromptTarget, s nativePromptSnapshot, cwd string) ([]nativePromptCommand, []string, error) {
-	bad := func(reason, detail string) ([]nativePromptCommand, []string, error) {
-		return nil, nil, &promptRuntimeError{reason, detail}
+type dshPromptDiagnostic struct {
+	Kind       string `json:"kind"`
+	Plugin     string `json:"plugin"`
+	Dependency string `json:"dependency"`
+	Export     string `json:"export"`
+	Variable   string `json:"variable"`
+	Layer      string `json:"layer"`
+}
+
+func (d dshPromptDiagnostic) exportSource() string {
+	if d.Kind == "export" && len(d.Plugin) <= 214 && len(d.Dependency) <= 214 && len(d.Export) <= 128 && dshPromptPackageName.MatchString(d.Plugin) && dshPromptPackageName.MatchString(d.Dependency) && dshPromptExportName.MatchString(d.Export) {
+		return d.Plugin + ": " + d.Dependency + " (" + d.Export + ")"
+	}
+	return ""
+}
+
+func readDSHPromptContextInventory(ctx context.Context, t PromptTarget, s nativePromptSnapshot, cwd string) (dshPromptInventory, error) {
+	bad := func(reason, detail string) (dshPromptInventory, error) {
+		return dshPromptInventory{}, &promptRuntimeError{reason, detail}
 	}
 	node := proc.FindTool("node")
 	if node == "" {
@@ -165,7 +196,7 @@ func readDSHPromptContext(ctx context.Context, t PromptTarget, s nativePromptSna
 	}
 	temp, err := os.MkdirTemp("", "magpie-dsh-prompt-check-")
 	if err != nil {
-		return nil, nil, err
+		return dshPromptInventory{}, err
 	}
 	defer os.RemoveAll(temp)
 	if err := dshPromptCopyProfile(t.dir, temp); err != nil {
@@ -176,14 +207,14 @@ func readDSHPromptContext(ctx context.Context, t PromptTarget, s nativePromptSna
 	// the native profile resolver's scope and lose installation peer fallback.
 	deps := filepath.Join(t.dir, "profiles", "node_modules")
 	if _, err := os.Stat(deps); err != nil {
-		return nil, nil, err
+		return dshPromptInventory{}, err
 	}
 	if err := os.Symlink(deps, filepath.Join(temp, "profiles", "node_modules")); err != nil {
 		return bad("DeepSeek Harness configuration cannot be safely mapped", "Could not link native dependencies")
 	}
 	helper := filepath.Join(temp, "probe.mjs")
 	if err := os.WriteFile(helper, []byte(dshPromptProbe), 0600); err != nil {
-		return nil, nil, err
+		return dshPromptInventory{}, err
 	}
 	envCwd := cwd
 	if promptSamePath(cwd, t.dir) {
@@ -228,14 +259,9 @@ func readDSHPromptContext(ctx context.Context, t PromptTarget, s nativePromptSna
 		Complete   bool                  `json:"complete"`
 		Reason     string                `json:"reason"`
 		Sources    []string              `json:"sources"`
-		Diagnostic struct {
-			Kind       string `json:"kind"`
-			Plugin     string `json:"plugin"`
-			Dependency string `json:"dependency"`
-			Export     string `json:"export"`
-			Variable   string `json:"variable"`
-			Layer      string `json:"layer"`
-		} `json:"diagnostic"`
+		Diagnostic dshPromptDiagnostic   `json:"diagnostic"`
+		Warnings   []dshPromptDiagnostic `json:"warnings"`
+		StderrHash string                `json:"stderrHash"`
 	}
 	lines := strings.Split(strings.TrimSpace(out.b.String()), "\n")
 	if json.Unmarshal([]byte(lines[len(lines)-1]), &result) != nil {
@@ -248,8 +274,8 @@ func readDSHPromptContext(ctx context.Context, t PromptTarget, s nativePromptSna
 		if d.Kind == "dependency" && len(d.Plugin) <= 214 && len(d.Dependency) <= 214 && dshPromptPackageName.MatchString(d.Plugin) && dshPromptPackageName.MatchString(d.Dependency) {
 			return bad("DeepSeek Harness plugin dependency could not be loaded", d.Plugin+": "+d.Dependency)
 		}
-		if d.Kind == "export" && len(d.Plugin) <= 214 && len(d.Dependency) <= 214 && len(d.Export) <= 128 && dshPromptPackageName.MatchString(d.Plugin) && dshPromptPackageName.MatchString(d.Dependency) && dshPromptExportName.MatchString(d.Export) {
-			return bad("DeepSeek Harness plugin requires an export unavailable in the installed dependency", d.Plugin+": "+d.Dependency+" ("+d.Export+")")
+		if source := d.exportSource(); source != "" {
+			return bad("DeepSeek Harness plugin requires an export unavailable in the installed dependency", source)
 		}
 		if d.Kind == "environment" && len(d.Variable) <= 256 && dshPromptVariableName.MatchString(d.Variable) && (d.Layer == "user" || d.Layer == "project") {
 			root := cwd
@@ -260,8 +286,22 @@ func readDSHPromptContext(ctx context.Context, t PromptTarget, s nativePromptSna
 		}
 		return bad("DeepSeek Harness skill source completeness could not be verified", result.Reason)
 	}
-	if err != nil || stderr.failed() {
+	stderrValid := !stderr.failed()
+	if len(result.Warnings) > 0 {
+		// Only the complete native audit warning proven by this launch may
+		// appear on stderr. Any additional byte still invalidates the result.
+		stderrValid = result.StderrHash == fmt.Sprintf("%x", sha256.Sum256([]byte(stderr.b.String())))
+	}
+	if err != nil || !stderrValid {
 		return bad("DeepSeek Harness native inventory could not be read", "Native startup, authorization or protocol failed")
 	}
-	return result.Commands, result.Sources, nil
+	inventory := dshPromptInventory{Commands: result.Commands, Sources: result.Sources}
+	for _, warning := range result.Warnings {
+		source := warning.exportSource()
+		if source == "" {
+			return bad("Native skill verification returned invalid output", "DeepSeek Harness")
+		}
+		inventory.Warnings = append(inventory.Warnings, source)
+	}
+	return inventory, nil
 }

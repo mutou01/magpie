@@ -245,7 +245,7 @@ concurrent cache replacement, and DSH linked-root routing changes remain
 unverified. These limits preclude a claim of complete acceptance. No push,
 merge or release follows from the passing targeted checks.
 
-## DSH missing-export diagnosis
+## DSH missing-export diagnosis (historical)
 
 The later `Native plugin graph contains an inactive or unresolved entry`
 report was traced to `dsh-at-file`: it imports `settingsNamespace` from
@@ -254,9 +254,9 @@ name. An external read-only client using the original installation's profile
 and native resolver reproduced the same `SyntaxError`; this was not an
 isolation-copy failure or a plugin waiting for a service.
 
-The adapter now distinguishes this exact native missing-export error from
+The preceding diagnostic change distinguished this exact native missing-export error from
 arbitrary syntax errors. It reports a static translated reason and the bounded,
-validated plugin, dependency and export names. The result remains unverified.
+validated plugin, dependency and export names. That change left the result unverified.
 No plugin, dependency or original configuration is changed, and no inactive
 plugin is silently excluded to make the check pass. This diagnostic change
 does not make the incompatible installed plugin usable.
@@ -288,6 +288,80 @@ approval review with only `blocked by policy`. It remains at
 contains isolated configuration and private logs, and must not be shared.
 No alternate cleanup was attempted.
 
+## Effective DSH namespace with an optional link failure (2026-10-25)
+
+The current change follows the effective command/skill namespace rather than
+requiring every optional host extension to activate. The installed `dsh-at-file`
+still has its original missing-export failure; magpie neither repairs it nor
+changes its configuration. Only an independently proven native ESM instantiation
+failure may accompany an available/enabled template as a safe warning. Required
+startup failures, runtime throws, incomplete inventories and unknown providers
+remain blocking.
+
+Native HMR schedules an initial configuration reconciliation after readiness.
+It can replace a failed Job and recompose an Entry's options with equal values
+after `runProfile()` returns. A later import also has a shorter native stack.
+Consequently, object-reference equality and a later audit's unadjusted stack
+cannot establish startup identity. The client retains the original failed Job
+before yielding, independently proves both jobs' complete linked graphs and
+source bytes, compares complete options by value, and restores only those
+verified startup stacks in the original audit's generated text. Go requires the
+hash of every actual stderr byte to match; neither the Error nor logger changes.
+
+Sol medium first reproduced the public availability failure in 6.58 seconds.
+The public Check → Save → Read test now passed in 34.11 seconds, retaining the
+safe warning after deployment and rejecting stale evidence after the failed
+extension's source changed. A separate public test exposed omitted active host
+group sources: editing only that implementation incorrectly kept passive
+availability (28.81 seconds). Host groups now join source collection; the native
+`cordis:group` is bound to the original loader's exported implementation.
+That test passed after the fix (29.22 seconds). The same omission in detached
+preset trees was independently reproduced (29.20 seconds); live original
+runtime Fibers now supply those groups' actual Entries and declaring bases.
+The preset-group regression passed in 28.97 seconds.
+A dependency-alias mutation kept the old physical module bytes unchanged:
+removing importer-alias collection made the public stale-evidence test fail
+(28.91 seconds), and restoring it passed (28.76 seconds).
+
+The configured-profile public Check → Save → original native invocation passed
+in 57.23 seconds (package 60.205 seconds). The isolated copy preserved 804
+entries and 8,171,006 bytes; the failing `dsh-at-file` remained enabled and
+unrepaired. The invocation used the same saved artifact, checked all accepted
+source roots before and after, and retained the original optional-link warning.
+Five selected original configuration/plugin files also retained their hashes;
+this is not a full installation audit.
+
+The original public `defaultId` identified `standard` as the default preset.
+The standard, PTC and cordis scopes resolved the original filesystem and
+tool-skill modules, exposed the saved skill with user invocation enabled and
+model invocation disabled, and passed explicit body expansion, trailing text,
+ordinary chat, implicit non-disclosure and actual model-requested-load rejection.
+PTC exercised its native `run_code` route. The original minimal composition has
+neither skill entry point: its scope had no skill tool or saved skill, and its
+slash text and trailing argument remained ordinary input without leaking the
+body. Acceptance classifies effective native composition and scoped capabilities,
+not preset names; it does not add a missing feature to an original preset.
+
+The native adversarial group passed in 219.773 seconds: runtime throws with the
+same SyntaxError text, required missing exports, name conflicts, dependency-alias
+changes, unrelated stderr, unknown skill providers, private diagnostics,
+counterfeit ACL bodies, missing dependencies, native cancellation, profile peer
+fallback and existing compatibility grants. The selected DSH policy/isolation,
+Pi/Codex shared-path smoke and Pi timeout/cancellation group passed in 13.799
+seconds. The missing-export recovery and configured-warning checks passed in
+55.72 and 30.37 seconds respectively. Windows and Linux amd64 Library package
+build and vet, changed-file formatting, the three JavaScript syntax checks and
+the two selected i18n key checks passed. Sol medium performed these tests and
+builds; the primary agent developed the production changes.
+
+As requested, no full repository regression or full GUI suite was run. Native
+invocation used the original `runProfile` and Agent APIs with a loopback model;
+the `bin.js` argument entry point, remote models and non-Windows runtime were
+not tested. The failed-group fixture proves that fixture is blocked, not every
+possible non-active group state. Live group source coverage does not prove the
+state of disposed or never-created Fibers. Historical concurrency and routing
+limitations recorded above remain outside this change.
+
 ## Reproduce opt-in native checks
 
 Use the installed paths from the machine under test, without changing its files:
@@ -295,7 +369,8 @@ Use the installed paths from the machine under test, without changing its files:
 ```powershell
 $env:MAGPIE_VERIFY_DSH_HOME = '<original DSH home>'
 $env:MAGPIE_VERIFY_NODE_BIN = '<original node.exe>'
-go test -tags nogui ./internal/library -run '^TestPromptTemplateOriginalDSH' -count=1 -v -timeout=12m
+$env:MAGPIE_VERIFY_DSH_CONFIGURED_OPTIONAL = '1'
+go test -tags nogui ./internal/library -run '^TestPromptTemplateOriginalDSHConfiguredOptionalFailureNativeInvocation$' -count=1 -v
 $env:MAGPIE_VERIFY_CODEX_BIN = '<original native codex.exe>'
 go test ./internal/library -run '^TestPromptTemplateOriginalCodexConfiguredWarningsPreserveAvailability$' -count=1 -v
 node internal/library/testdata/verify-codex-prompts.cjs '<original native codex.exe>' '<newly built magpie.exe>'

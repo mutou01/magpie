@@ -111,7 +111,8 @@ func (l *Library) promptState(t PromptTarget, p *Prompt, text string) PromptStat
 			return s
 		}
 	}
-	if source, err := l.promptConflict(t, p); err != nil {
+	source, warnings, err := l.promptConflictWarnings(t, p)
+	if err != nil {
 		s.Status, s.Reason, s.Source = "unverified", "Could not check command sources", err.Error()
 		var runtimeErr *promptRuntimeError
 		if errors.As(err, &runtimeErr) {
@@ -135,6 +136,10 @@ func (l *Library) promptState(t PromptTarget, p *Prompt, text string) PromptStat
 		}
 	}
 	s.Reason, s.Source = codexPromptWarning(t)
+	if t.ID == "dsh" && len(warnings) > 0 {
+		s.Reason = "DeepSeek Harness plugin requires an export unavailable in the installed dependency"
+		s.Source = strings.Join(warnings, "; ")
+	}
 	return s
 }
 
@@ -158,6 +163,12 @@ func (l *Library) isPromptSkill(dir string) bool {
 }
 
 func (l *Library) promptConflict(t PromptTarget, p *Prompt) (string, error) {
+	source, _, err := l.promptConflictWarnings(t, p)
+	return source, err
+}
+
+func (l *Library) promptConflictWarnings(t PromptTarget, p *Prompt) (string, []string, error) {
+	var warnings []string
 	sources := []promptSource{{path: t.folder()}, {path: filepath.Join(t.dir, "skills"), skills: true}, {path: sharedSkillsDir(), skills: true}}
 	if t.ID == "codex-desktop" || t.ID == "codex" || t.ID == "dsh" {
 		sources[0].skills = true
@@ -165,17 +176,19 @@ func (l *Library) promptConflict(t PromptTarget, p *Prompt) (string, error) {
 	}
 	if t.ID == "pi" {
 		if hit, err := l.piCommandConflict(t, p); err != nil || hit != "" {
-			return hit, err
+			return hit, nil, err
 		}
 	}
 	if t.ID == "codex" || t.ID == "dsh" {
-		if hit, err := l.nativePromptConflict(t, p); err != nil || hit != "" {
-			return hit, err
+		hit, notices, err := l.nativePromptConflict(t, p)
+		if err != nil || hit != "" {
+			return hit, nil, err
 		}
+		warnings = notices
 	}
 	extra, err := promptConfiguredSources(t)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	sources = append(sources, extra...)
 	sources = append(sources, promptSource{path: filepath.Join(t.dir, "plugins"), plugins: true})
@@ -199,10 +212,10 @@ func (l *Library) promptConflict(t PromptTarget, p *Prompt) (string, error) {
 		seen[source.path] = true
 		hit, err := l.scanPromptSource(t.ID, p, source)
 		if err != nil || hit != "" {
-			return hit, err
+			return hit, nil, err
 		}
 	}
-	return "", nil
+	return "", warnings, nil
 }
 
 // scanPromptSource scans only command and skill declarations, never executes a
