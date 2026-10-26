@@ -1238,6 +1238,9 @@ magpie.plugin("library", (ctx) => {
   }
   const promptLabel = (s) => t(({ enabled: "Enabled", disabled: "Off", available: "Not enabled", conflict: "Name conflict", edited: "Edited outside the library", unverified: "Awaiting verification", unsupported: "Unavailable" })[s.status] || "Awaiting verification");
   const promptCheckTime = s => s?.checkedAt ? t("Last checked {time}", { time: new Date(s.checkedAt).toLocaleString() }) : "";
+  const promptDeployed = s => s?.deployed ?? s?.status === "enabled";
+  const promptStale = s => s?.status === "unverified" && ["Check native command availability again", "Check Pi command availability again"].includes(s.reason);
+  const promptAttention = s => s?.status === "disabled" ? lib.prompts?.enabled !== false : !["enabled", "available"].includes(s?.status) && !(promptDeployed(s) && promptStale(s));
 
   function promptChips(p) {
     const selected = p.agents || [];
@@ -1249,8 +1252,8 @@ magpie.plugin("library", (ctx) => {
       const s = state(a);
       return [p.error, s?.reason ? t(s.reason) : s ? promptLabel(s) : t("Awaiting verification"), s?.source, s?.status === "unverified" && t("Open the template editor to check availability again")].filter(Boolean).join(" · ");
     };
-    const problems = Object.fromEntries(targets.filter(a => !usable(a)).map(a => [a.id, reason(a)]));
-    const lit = lib.prompts?.enabled === false ? selected : (p.states || []).filter(s => s.status === "enabled").map(s => s.agent);
+    const problems = Object.fromEntries(targets.filter(a => !usable(a) && !(promptDeployed(state(a)) && promptStale(state(a)))).map(a => [a.id, reason(a)]));
+    const lit = lib.prompts?.enabled === false ? selected : p.error ? [] : selected.filter(id => promptDeployed(p.states?.find(s => s.agent === id)));
     const change = (_, c) => setPromptAgents(p, c, targets.filter(usable).map(a => a.id));
     const box = agentChips(targets, lit, change, { problems, blocked: a => !can(a) && !selected.includes(a.id) ? reason(a) : "" });
     // All affects only eligible targets. A retained but unverified selection
@@ -1267,10 +1270,12 @@ magpie.plugin("library", (ctx) => {
     for (const a of targets) {
       const c = [...box.children].find(c => c.dataset.agent === a.id);
       c.setAttribute("aria-label", a.name);
+      const details = reason(a);
+      if (details && !c.title.includes(details)) c.title += "\n" + details;
       if (!can(a) && selected.includes(a.id)) c.title += "\n" + t("{agent} has it — click to take it away", { agent: a.name });
       if (promptCheckTime(state(a))) c.title += "\n" + promptCheckTime(state(a));
       if (a.invocation) c.title += "\n" + a.invocation;
-      if (a.reload && state(a)?.status === "enabled") c.title += "\n" + t(a.reload);
+      if (a.reload && promptDeployed(state(a))) c.title += "\n" + t(a.reload);
     }
     return box;
   }
@@ -1293,7 +1298,7 @@ magpie.plugin("library", (ctx) => {
     for (const c of box.children) c.setAttribute("aria-busy", String(busy));
     const tags = row.querySelector(".lib-tags");
     tags.replaceChildren();
-    if (p.error || (p.states || []).some(s => (p.agents || []).includes(s.agent) && !["enabled", "available", "disabled"].includes(s.status))) tags.append(tag(t("Needs attention"), "warn"));
+    if (p.error || (p.states || []).some(s => (p.agents || []).includes(s.agent) && promptAttention(s))) tags.append(tag(t("Needs attention"), "warn"));
   }
 
   async function setPromptAgents(p, c, eligible) {
@@ -1379,10 +1384,20 @@ magpie.plugin("library", (ctx) => {
     sw.disabled = changing || promptWriting.size > 0;
     head.append(glyph(GLYPH.doc), el("b", "", t("Prompt templates")), sw, el("span", "grow"), refresh, button("+ " + t("New template"), "action lib-prompt-add", () => editPrompt()));
     card.append(head, el("p", "lib-aside", t("Use the native invocation shown for each harness to apply a template with your request.")));
+    const checks = el("div", "lib-agents lib-prompt-checks");
     for (const s of lib.prompts?.checks || []) {
       const a = lib.prompts.targets.find(a => a.id === s.agent);
-      if (a?.detected) card.append(el("div", "note lib-prompt-harness-check", [a.name, promptLabel(s), s.reason && t(s.reason), s.source, promptCheckTime(s)].filter(Boolean).join(" · ")));
+      if (!a?.detected) continue;
+      const passed = ["available", "enabled"].includes(s.status);
+      const label = passed ? t("Availability check passed") : promptLabel(s);
+      const icon = button("", "lib-ag lib-prompt-harness-check" + (passed ? " on" : s.status === "disabled" ? "" : " warn"), () => status(icon.title));
+      icon.append(agentIcon(a.icon));
+      icon.dataset.agent = a.id;
+      icon.title = [a.name, label, s.reason && t(s.reason), s.source, promptCheckTime(s)].filter(Boolean).join(" · ");
+      icon.setAttribute("aria-label", icon.title);
+      checks.append(icon);
     }
+    card.append(checks);
     const search = input(promptSearch, t("Search templates"));
     search.className = "lib-prompt-search";
     search.setAttribute("aria-label", t("Search templates"));

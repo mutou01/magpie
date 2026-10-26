@@ -14,6 +14,36 @@ import (
 )
 
 func TestPromptTemplateOriginalDSHConfiguredOptionalFailureNativeInvocation(t *testing.T) {
+	verifyConfiguredDSHInvocation(t, true)
+}
+
+func TestPromptTemplateOriginalDSHConfiguredNativeInvocation(t *testing.T) {
+	verifyConfiguredDSHInvocation(t, false)
+}
+
+func TestPromptTemplateOriginalDSHConfiguredAcceptanceAllowsHealthyNamespace(t *testing.T) {
+	_, plugin := originalDSHExportFixture(t)
+	write(t, filepath.Join(plugin, "index.mjs"), "export function apply() {}\n")
+	state := checkDSHExportFixture(t)
+	if state.Status != "available" || state.Reason != "" || state.Source != "" {
+		t.Fatalf("healthy original namespace must be available without a warning: %+v", state)
+	}
+	configuredDSHInvocationWarning(t, state, false)
+}
+
+func configuredDSHInvocationWarning(t *testing.T, state PromptState, requireOptional bool) string {
+	t.Helper()
+	const expected = "dsh-at-file: @deepseek-ai/dsh-settings (settingsNamespace)"
+	if !requireOptional && state.Status == "available" && state.Reason == "" && state.Source == "" {
+		return ""
+	}
+	if state.Status != "available" || state.Reason != "DeepSeek Harness plugin requires an export unavailable in the installed dependency" || !regexp.MustCompile(`^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*: (?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]* \([A-Za-z_$][A-Za-z0-9_$]*\)$`).MatchString(state.Source) || (requireOptional && state.Source != expected) {
+		t.Fatalf("configured optional link failure must preserve verified effective namespace: %+v", state)
+	}
+	return state.Source
+}
+
+func verifyConfiguredDSHInvocation(t *testing.T, requireOptional bool) {
 	dir, node := os.Getenv("MAGPIE_VERIFY_DSH_HOME"), os.Getenv("MAGPIE_VERIFY_NODE_BIN")
 	if runtime.GOOS != "windows" || dir == "" || node == "" || os.Getenv("MAGPIE_VERIFY_DSH_CONFIGURED_OPTIONAL") != "1" {
 		t.Skip("opt-in original configured DSH optional failure and loopback invocation")
@@ -23,16 +53,26 @@ func TestPromptTemplateOriginalDSHConfiguredOptionalFailureNativeInvocation(t *t
 	diagnosticRoot := filepath.Dir(os.TempDir())
 	before := map[string]string{}
 	for _, rel := range []string{".env", "profiles/web/package.json", "profiles/web/cordis.patch.yml", "profiles/web/cordis.yml", "profiles/web/node_modules/dsh-at-file/lib/index.js"} {
+		if _, err := os.Stat(filepath.Join(dir, rel)); !requireOptional && os.IsNotExist(err) {
+			before[rel] = "missing"
+			continue
+		}
 		before[rel] = promptHash([]byte(read(t, filepath.Join(dir, rel))))
 	}
 	t.Cleanup(func() {
 		for rel, sum := range before {
+			if sum == "missing" {
+				if _, err := os.Stat(filepath.Join(dir, rel)); !os.IsNotExist(err) {
+					t.Errorf("original absent source changed: %s", rel)
+				}
+				continue
+			}
 			if promptHash([]byte(read(t, filepath.Join(dir, rel)))) != sum {
 				t.Errorf("original selected source changed: %s", rel)
 			}
 		}
 	})
-	h := sandbox(t)
+	h := promptEnabledSandbox(t)
 	t.Setenv("PATH", filepath.Join(h, "bin")+string(os.PathListSeparator)+filepath.Dir(node)+string(os.PathListSeparator)+filepath.Join(os.Getenv("SystemRoot"), "System32"))
 	isolated := t.TempDir()
 	if err := dshPromptCopyProfile(dir, isolated); err != nil {
@@ -49,17 +89,29 @@ func TestPromptTemplateOriginalDSHConfiguredOptionalFailureNativeInvocation(t *t
 	t.Logf("Configured profile isolated: %d entries, %d bytes", copyReport.CopiedEntries, copyReport.CopiedBytes)
 	t.Setenv("DSH_HOME", isolated)
 	state := checkDSHExportFixture(t)
-	const expected = "dsh-at-file: @deepseek-ai/dsh-settings (settingsNamespace)"
-	if state.Status != "available" || state.Source != expected || state.Reason != "DeepSeek Harness plugin requires an export unavailable in the installed dependency" {
-		t.Fatalf("configured optional link failure must preserve verified effective namespace: %+v", state)
-	}
+	expected := configuredDSHInvocationWarning(t, state, requireOptional)
 	const marker = "CONFIGURED_OPTIONAL_FAILURE_SAVED_BODY"
-	result, err := SavePrompt(PromptChange{Name: "audit-code", Text: marker, Agents: []string{"dsh"}})
+	const initialMarker = "CONFIGURED_OPTIONAL_FAILURE_REPLACED_BODY"
+	result, err := SavePrompt(PromptChange{Name: "audit-code", Text: initialMarker, Agents: []string{"dsh"}})
 	if err != nil || result == nil || len(result.Problems) != 0 {
 		t.Fatalf("configured optional failure prevented checked public save: %+v %v", result, err)
 	}
 	artifact := filepath.Join(isolated, "skills/audit-code/SKILL.md")
+	if !strings.Contains(read(t, artifact), initialMarker) {
+		t.Fatal("initial public save did not publish its body")
+	}
+	view, err := ReadPrompts()
+	if err != nil || len(view.Items) != 1 {
+		t.Fatalf("public save did not expose the editable template: %+v %v", view, err)
+	}
+	result, err = SavePrompt(PromptChange{ID: view.Items[0].ID, Name: "audit-code", Text: marker, Agents: []string{"dsh"}})
+	if err != nil || result == nil || len(result.Problems) != 0 {
+		t.Fatalf("public edit save failed: %+v %v", result, err)
+	}
 	deployed := read(t, artifact)
+	if !strings.Contains(deployed, marker) || strings.Contains(deployed, initialMarker) {
+		t.Fatal("edit save did not replace the same deployed artifact")
+	}
 	// Export the accepted source roots only as independent invocation evidence;
 	// all availability and deployment assertions above use the public boundary.
 	nativePromptChecks.Lock()
@@ -71,7 +123,7 @@ func TestPromptTemplateOriginalDSHConfiguredOptionalFailureNativeInvocation(t *t
 	sources := filepath.Join(t.TempDir(), "sources.json")
 	encoded, _ := json.Marshal(roots)
 	write(t, sources, string(encoded))
-	output, err := proc.Command(node, "testdata/verify-dsh-prompts.mjs", dshPromptEntry(dir), isolated, artifact, marker, sources, "--preserve-profile").Output()
+	output, err := proc.Command(node, "testdata/verify-dsh-prompts.mjs", dshPromptEntry(dir), isolated, artifact, marker, sources, "--preserve-profile", initialMarker, expected).Output()
 	if err != nil {
 		if exit, ok := err.(*exec.ExitError); ok {
 			diagnostic, createErr := os.MkdirTemp(diagnosticRoot, "magpie-configured-invocation-private-")
@@ -104,7 +156,7 @@ func TestPromptTemplateOriginalDSHConfiguredOptionalFailureNativeInvocation(t *t
 		t.Fatal("configured invocation did not prove the same saved artifact with the same optional failure")
 	}
 	t.Logf("Native preset capability results: %s", report.PresetResults)
-	t.Logf("Configured copy: %d entries, %d bytes; original selected files unchanged: %d; original native loopback invocation retained optional failure across %d presets", copyReport.CopiedEntries, copyReport.CopiedBytes, len(before), report.PresetCount)
+	t.Logf("Configured copy: %d entries, %d bytes; original selected files unchanged: %d; original native loopback invocation across %d presets; retained warning: %q", copyReport.CopiedEntries, copyReport.CopiedBytes, len(before), report.PresetCount, expected)
 }
 
 func TestPromptTemplateOriginalDSHOptionalExportExceptionRejectsRuntimeThrow(t *testing.T) {

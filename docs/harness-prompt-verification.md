@@ -446,6 +446,108 @@ or plugins. Full repository regression is explicitly excluded by the requested
 test scope; earlier full-suite/native invocation evidence above remains
 historical, not evidence of rerunning those checks for this change.
 
+## 2026-10-26: save cost and independent deployment facts
+
+The public Windows regression
+`TestPromptTemplateSaveDoesNotRescanAllSourcesForEveryTemplate` reproduced the
+save amplification using `GetProcessIoCounters`, without a production hook or
+elapsed-time assertion. With 256 unrelated Claude commands, editing one template
+caused 2,099 file reads in a one-template library and 17,079 in an eight-template
+library; the twofold allowance failed. Its measurement excludes fixture setup,
+active checks and assertion reads. With the fix, the same public regression
+recorded 1,081 and 1,319 reads and passed. The read-only `promptReader` now reuses source
+evidence within a phase; publication, retirement and response use separate phases.
+Destination ownership and content checks remain immediately before mutation.
+
+The public deployment-fact regression first failed after an isolated Codex config
+edit invalidated native evidence: unchanged owned files returned `unverified`
+without a deployment fact. It passed after adding independent `deployed`, while
+the write gate remained `unverified` and passive reads neither launched Codex nor
+changed its files. This is a file/deployment contract, not direct Codex Desktop UI
+acceptance.
+
+Real HTTP timing uses `measure-prompt-http.cjs`, isolated configuration, 128
+unrelated declarations and seven warm samples, without injected delays. Before
+the change, Claude Save medians were 216.95 ms for one template and 4,978.33 ms
+for sixteen; passive-check/save/read totals were 342.23 and 6,750.70 ms. The
+original samples are in
+`C:/Users/Administrator/AppData/Local/Temp/magpie-prompt-http-timing-frGywz/timing.json`.
+The before binary SHA256 is
+`58D828EC6CDC2CD4A0A9E6FD913EEBE6F4C78F92590D7297633B0729AA2654C6`.
+Process restart is measured separately; the operating-system file cache is not
+flushed. These are measured fixtures, not a latency promise for every user setup.
+
+With the current binary, Claude Save medians were 139.45 ms for one template and
+201.27 ms for sixteen; the three-request totals were 226.75 and 302.57 ms.
+The sixteen-template Save improved from 4,978.33 to 201.27 ms (about 96%).
+The matching after samples are in
+`C:/Users/Administrator/AppData/Local/Temp/magpie-prompt-http-timing-4lQ8TM/timing.json`;
+the binary SHA256 is
+`B6ACF379C97783CE1B857491ADA9DEA63A9BEB03F7CB8624818EEA7D33BC5A9E`.
+
+The matched Codex timing fixture uses eight unrelated declarations, one/four
+templates and three warm samples. Save medians changed from 280.12/4,070.18 ms
+to 227.68/727.75 ms; three-request totals changed from 476.82/6,022.51 ms to
+372.83/1,254.13 ms. Its before/after samples are respectively
+`C:/Users/Administrator/AppData/Local/Temp/magpie-prompt-http-timing-J20BNT/timing.json`
+and `C:/Users/Administrator/AppData/Local/Temp/magpie-prompt-http-timing-aLfNzq/timing.json`,
+with the same before/after binary hashes above. A larger Codex baseline with
+128 declarations timed out before completing the sixteen-template comparison;
+it is not evidence of a completed before/after measurement. The optimization
+does not eliminate filesystem verification cost or guarantee a latency bound.
+
+The three related browser files initially passed 48 tests across Chromium/WebKit
+and five languages; the five translation checks also passed. After adding
+420/560-pixel overview bounds, Pi stale-evidence and unknown-error controls, the
+affected enabled file passed 24 tests in 49.308 seconds. Both browser engines
+confirm keyboard access, localized passed status and reason/source/time details.
+Only recognized expired-evidence reasons suppress a row alarm for an intact
+deployment; unknown native errors retain warnings.
+
+The DSH gate previously required the machine's particular optional-plugin
+missing-export warning even on a healthy installation. An isolated original-DSH
+healthy-namespace test reproduced that false rejection in 26.73 seconds and
+passed in 26.83 seconds after separating general invocation acceptance from the
+strict optional-failure case. The latter still requires the original enabled
+plugin and exact native missing-export failure; its original invocation passed
+in 156.77 seconds. This adjusts acceptance clients, not production availability
+rules or installed Harness files.
+
+The mandatory dedicated entry point and its scope are documented in the
+[Library regression gate](subsystems/library.md#prompt-template-regression-gate).
+Full repository regression is excluded by the user's explicit scope.
+
+The final single invocation of `scripts/test-prompt-templates.ps1` exited zero
+with all eight stages passing. Public Library/GUI prompt regressions took
+298.47 seconds; Chromium/WebKit across five languages passed 48/48 tests in
+56.96 seconds, and the selected native-diagnostic translation check passed.
+Original Claude, Pi and Codex public Save/edit/invocation acceptance passed in
+3.27, 4.92 and 9.00 seconds. The original DSH general invocation stage passed
+in 76.58 seconds with its named test explicitly passing and zero skips.
+Its standard/default, ptc and cordis presets expanded the edited body and tail
+and rejected model-requested loading; minimal has no native skill route and
+preserved the slash text without loading the body. This does not grant template
+support to that preset. Selected original-file fingerprints were unchanged:
+Claude three, Pi three, Codex four and DSH five files, not a whole-install audit.
+
+The final gate's 1,138 production source fingerprints had zero mismatches, and
+its freshly built binary has the same after hash recorded above. Stage commands,
+logs and source evidence are retained under
+`C:/Users/Administrator/AppData/Local/Temp/magpie-prompt-unified-final-20261026/`
+(`stages.json`, `final-proof.json`, `source-snapshot.json`). The related packages
+also passed `go vet -tags nogui ./internal/library ./internal/gui` and
+`go build -tags nogui ./internal/library ./internal/gui` for Windows and Linux
+amd64, changed-Go `gofmt -l` and eight related JavaScript syntax checks. Those
+commands/results are in
+`C:/Users/Administrator/AppData/Local/Temp/magpie-prompt-reader-final-gate/static-checks-final.json`.
+Linux evidence is static/cross-build only; original invocation acceptance is
+Windows-only, and Codex acceptance exercises the CLI, not Desktop UI automation.
+
+An earlier browser attempt failed waiting for a Japanese Codex Space activation.
+It did not reproduce in the subsequent full run or the final gate; its cause
+is unconfirmed. Bounded event diagnostics remain in that test, and the final
+test retains keyboard activation and the original assertions/time limit.
+
 ## Reproduce opt-in native checks
 
 Use the installed paths from the machine under test, without changing its files:

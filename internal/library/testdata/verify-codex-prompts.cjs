@@ -10,6 +10,7 @@ const { spawn, execFileSync } = require("node:child_process");
 
 async function main() {
   assert.equal(process.platform, "win32");
+  assert(process.argv[2] && process.argv[3], "Supply the original Codex executable and the built magpie executable; public Save acceptance cannot use hand-written artifacts");
   const bin = path.resolve(process.argv[2] || "");
   assert.equal(path.basename(bin), "codex.exe", "Pass the installed native Codex executable");
   const originals = [bin, ...[".codex/config.toml", ".agents/skills/git-workflow/agents/openai.yaml", ".codex/skills/git-workflow/agents/openai.yaml"].map(p => path.join(process.env.USERPROFILE, p))];
@@ -23,6 +24,7 @@ async function main() {
   const root = await fs.mkdtemp(path.join(path.parse(process.cwd()).root, "magpie-codex-policy-"));
   const home = path.join(root, "home"), cwd = path.join(root, "work");
   const body = "MAGPIE_EXPLICIT_BODY_正文_7f6132";
+  const initialBody = "MAGPIE_REPLACED_INITIAL_BODY_7f6132";
   const tail = "MAGPIE_TRAILING_用户尾参_7f6132";
   const skill = path.join(home, "skills", "magpie-policy-probe");
   const requests = [];
@@ -88,17 +90,19 @@ async function main() {
         const checked = codex(await api("check", { name: "magpie-policy-probe" }));
         assert.equal(checked.status, "available");
         assert.equal(checked.reason, "Codex ignored unrelated configuration or skill metadata; this template is unaffected");
-        const saved = await api("save", { name: "magpie-policy-probe", text: body, agents: ["codex"] });
+        const initial = await api("save", { name: "magpie-policy-probe", text: initialBody, agents: ["codex"] });
+        const initialItem = initial.prompts.items.find(p => p.name === "magpie-policy-probe");
+        assert(initialItem, "Initial public Save must create the template");
+        assert((await fs.readFile(path.join(skill, "SKILL.md"), "utf8")).includes(initialBody));
+        const saved = await api("save", { id: initialItem.id, name: initialItem.name, text: body, agents: ["codex"] });
         const item = saved.prompts.items.find(p => p.name === "magpie-policy-probe");
         assert(item, "Public Save must return the new template");
         assert.equal(codex(item.states).status, "enabled");
+        assert.equal(item.id, initialItem.id, "Edit Save retains the public template identity");
         assert((await fs.readFile(path.join(skill, "SKILL.md"), "utf8")).includes(body), "Invoke the exact public Save artifact");
-        publicAPI = "disabled read/passive check -> Enable -> Check -> Save -> original CLI invocation of the same artifact";
+        assert(!(await fs.readFile(path.join(skill, "SKILL.md"), "utf8")).includes(initialBody));
+        publicAPI = "disabled read/passive check -> Enable -> Check -> Save -> Edit Save -> original CLI invocation of the same artifact";
       } finally { web.kill(); await webExit; }
-    } else {
-      await fs.mkdir(path.join(skill, "agents"), { recursive: true });
-      await fs.writeFile(path.join(skill, "SKILL.md"), `---\nname: magpie-policy-probe\ndescription: Explicitly invoke this skill to apply these instructions to the accompanying request.\n---\n\n${body}\n`);
-      await fs.writeFile(policy, "policy:\n  allow_implicit_invocation: false\n");
     }
     async function run(name, prompt) {
       requests.length = 0;
@@ -117,6 +121,7 @@ async function main() {
       assert.equal(code, 0, `${name}: original CLI must complete with the loopback model`);
       assert(requests.length > 0, `${name}: the local model must observe the request`);
       assert(result.tailPresent, `${name}: preserve the user instruction`);
+      assert(!input.includes(initialBody), `${name}: the replaced initial body cannot reach the model`);
       return result;
     }
     const explicit = await run("explicit", `$magpie-policy-probe ${tail}`);

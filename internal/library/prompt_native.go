@@ -391,7 +391,12 @@ func (l *Library) nativePromptEvidence(t PromptTarget) (nativePromptCheck, error
 }
 
 func (l *Library) nativePromptConflict(t PromptTarget, p *Prompt) (string, []string, error) {
-	c, err := l.nativePromptEvidence(t)
+	return (&promptReader{Library: l}).nativePromptConflict(t, p)
+}
+
+func (r *promptReader) nativePromptConflict(t PromptTarget, p *Prompt) (string, []string, error) {
+	l := r.Library
+	c, err := r.nativePromptEvidence(t)
 	if err != nil {
 		return "", nil, err
 	}

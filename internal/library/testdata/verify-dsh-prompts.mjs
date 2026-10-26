@@ -13,6 +13,8 @@ assert.equal(process.platform, 'win32');
 const entry = realpathSync(resolve(process.argv[2]));
 const sourceHome = resolve(process.argv[3]);
 const preserveProfile = process.argv[7] === '--preserve-profile';
+const replacedBody = process.argv[8];
+const expectedOptionalFailure = process.argv[9] ?? 'dsh-at-file: @deepseek-ai/dsh-settings (settingsNamespace)';
 const deployed = process.argv[4] ? readFileSync(resolve(process.argv[4])) : undefined;
 const marker = deployed ? process.argv[5] : 'MAGPIE_UNIQUE_BODY_' + randomUUID();
 assert.equal(typeof marker, 'string');
@@ -127,12 +129,15 @@ try {
     args: ['--host', '127.0.0.1', '--port', '0', '--no-open'] });
   const { ctx } = runtime;
   let retainedOptionalFailure;
-  if (preserveProfile) {
-    const failed = [...ctx.loader.entries()].filter(entry => entry.options.name === 'dsh-at-file' && !entry.disabled);
+  if (preserveProfile && expectedOptionalFailure) {
+    const match = /^((?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*): ((?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*) \(([A-Za-z_$][A-Za-z0-9_$]*)\)$/.exec(expectedOptionalFailure);
+    assert(match, 'Only a verified native missing-export warning may be retained');
+    const [, plugin, dependency, missingExport] = match;
+    const failed = [...ctx.loader.entries()].filter(entry => entry.options.name === plugin && !entry.disabled);
     assert.equal(failed.length, 1, 'Configured failing optional plugin must remain enabled');
     assert.equal(failed[0].fiber, undefined, 'Configured optional plugin must retain its original link failure');
-    await assert.rejects(failed[0].parent.tree.import(failed[0].options.name), error => error instanceof SyntaxError && error.message === "The requested module '@deepseek-ai/dsh-settings' does not provide an export named 'settingsNamespace'");
-    retainedOptionalFailure = 'dsh-at-file: @deepseek-ai/dsh-settings (settingsNamespace)';
+    await assert.rejects(failed[0].parent.tree.import(failed[0].options.name), error => error instanceof SyntaxError && error.message === `The requested module '${dependency}' does not provide an export named '${missingExport}'`);
+    retainedOptionalFailure = expectedOptionalFailure;
   }
   const { createUserMessage } = await native('@deepseek-ai/dsh-llm');
   const { installModelSelection } = await native('@deepseek-ai/dsh-agent');
@@ -197,6 +202,7 @@ try {
       await handle.agent.whenIdle();
       if (!received.length) process.stderr.write(`MAGPIE_SAFE_NO_REQUEST ${JSON.stringify({ ...scopeEvidence, stage: modelRequestsSkill ? 'tool' : text.startsWith('/audit-code ') ? 'explicit' : text.includes('自行选择') ? 'implicit' : 'ordinary' })}\n`);
       assert(received.length > 0, 'Original Agent must contact the loopback model');
+      if (replacedBody) assert(!JSON.stringify(received).includes(replacedBody), 'The replaced pre-edit body cannot reach the model');
       return JSON.stringify(received);
     } finally { await handle.dispose(); }
   }

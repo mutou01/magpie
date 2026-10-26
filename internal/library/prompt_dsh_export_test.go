@@ -89,7 +89,7 @@ func originalDSHExportFixture(t *testing.T) (string, string) {
 	if runtime.GOOS != "windows" || dir == "" || node == "" {
 		t.Skip("opt-in original Windows DSH missing dependency export")
 	}
-	h := sandbox(t)
+	h := promptEnabledSandbox(t)
 	t.Setenv("PATH", filepath.Join(h, "bin")+string(os.PathListSeparator)+filepath.Dir(node)+string(os.PathListSeparator)+filepath.Join(os.Getenv("SystemRoot"), "System32"))
 	isolated := t.TempDir()
 	write(t, filepath.Join(isolated, "profiles/web/package.json"), `{"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base","@deepseek-ai/dsh-web-app"]}}}`)

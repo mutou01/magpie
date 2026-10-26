@@ -40,9 +40,10 @@ type PromptsView struct {
 }
 
 func (l *Library) promptsView() *PromptsView {
+	r := &promptReader{Library: l}
 	v := &PromptsView{Enabled: l.promptsEnabled(), Items: []PromptView{}, Targets: promptTargets(), Checks: []PromptState{}}
 	for _, target := range v.Targets {
-		v.Checks = append(v.Checks, l.promptHarnessState(target))
+		v.Checks = append(v.Checks, r.promptHarnessState(target))
 	}
 	for _, p := range l.Prompts {
 		pv := PromptView{Prompt: *p, States: []PromptState{}}
@@ -57,9 +58,10 @@ func (l *Library) promptsView() *PromptsView {
 			pv.Text = string(body)
 		}
 		for _, t := range v.Targets {
-			state := l.promptState(t, p, pv.Text)
+			state := r.promptState(t, p, pv.Text)
 			if err != nil {
 				state.Status, state.Reason = "unverified", "Could not read template text"
+				state.Deployed = false
 			}
 			pv.States = append(pv.States, state)
 		}
@@ -129,6 +131,11 @@ func SetPromptsEnabledContext(ctx context.Context, enabled bool) (*Result, error
 // promptHarnessState describes inventory evidence without inventing a template
 // name. Template-specific collisions and file ownership are checked separately.
 func (l *Library) promptHarnessState(t PromptTarget) PromptState {
+	return (&promptReader{Library: l}).promptHarnessState(t)
+}
+
+func (r *promptReader) promptHarnessState(t PromptTarget) PromptState {
+	l := r.Library
 	s := PromptState{Agent: t.ID, Status: "available"}
 	if !t.Detected {
 		s.Status, s.Reason = "unsupported", "Not installed here"
@@ -141,12 +148,10 @@ func (l *Library) promptHarnessState(t PromptTarget) PromptState {
 	var err error
 	switch t.ID {
 	case "pi":
-		_, err = l.piCommandConflict(t, nil)
-		piCommandChecks.Lock()
-		s.CheckedAt = piCommandChecks.m[t.dir].checkedAt
-		piCommandChecks.Unlock()
+		_, err = r.piCommandConflict(t, nil)
+		s.CheckedAt = r.pi[t.dir].check.checkedAt
 	case "codex", "dsh":
-		c, e := l.nativePromptEvidence(t)
+		c, e := r.nativePromptEvidence(t)
 		err, s.CheckedAt = e, c.checkedAt
 	}
 	if err != nil {

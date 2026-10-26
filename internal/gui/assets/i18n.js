@@ -4,6 +4,7 @@
 // works. {name} slots are filled by t(str, vars).
 const I18N = {
   zh: {
+    "Availability check passed": "可用性检查通过",
     "Prompt templates": "提示词模板",
     "Prompt templates are turned off": "提示词模板已关闭",
     "Check native command availability again": "需要重新检查原生命令可用性",
@@ -3982,6 +3983,7 @@ const I18N = {
     "Where": "位置",
   },
   "zh-TW": {
+    "Availability check passed": "可用性檢查通過",
     "Prompt templates": "提示詞範本",
     "Prompt templates are turned off": "提示詞範本已關閉",
     "Check native command availability again": "需要重新檢查原生命令可用性",
@@ -7945,6 +7947,7 @@ const I18N = {
     "Where": "位置",
   },
   ja: {
+    "Availability check passed": "利用可否の確認に成功",
     "Prompt templates": "プロンプトテンプレート",
     "Prompt templates are turned off": "プロンプトテンプレートはオフです",
     "Check native command availability again": "ネイティブコマンドの利用可否を再確認してください",
@@ -11910,6 +11913,7 @@ const I18N = {
     "Where": "場所",
   },
   de: {
+    "Availability check passed": "Verfügbarkeitsprüfung bestanden",
     "Prompt templates": "Prompt-Vorlagen",
     "Prompt templates are turned off": "Prompt-Vorlagen sind ausgeschaltet",
     "Check native command availability again": "Native Befehlsverfügbarkeit erneut prüfen",

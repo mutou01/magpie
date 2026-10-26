@@ -57,6 +57,11 @@ func (l *Library) promptOwnedHash(id, pid, path string) string {
 }
 
 func (l *Library) promptState(t PromptTarget, p *Prompt, text string) PromptState {
+	return (&promptReader{Library: l}).promptState(t, p, text)
+}
+
+func (r *promptReader) promptState(t PromptTarget, p *Prompt, text string) PromptState {
+	l := r.Library
 	s := PromptState{Agent: t.ID, Status: "available"}
 	if !t.Detected {
 		s.Status, s.Reason = "unsupported", "Not installed here"
@@ -115,31 +120,39 @@ func (l *Library) promptState(t PromptTarget, p *Prompt, text string) PromptStat
 		s.Status, s.Reason = "disabled", "Prompt templates are turned off"
 		return s
 	}
-	source, warnings, err := l.promptConflictWarnings(t, p)
+	s.Deployed = allPresent
+	for path, b := range files {
+		if l.promptOwnedHash(t.ID, p.ID, path) != promptHash(b) {
+			s.Deployed = false
+			break
+		}
+	}
+	source, warnings, err := r.promptConflictWarnings(t, p)
+	if e, ok := r.native[nativePromptCacheKey(t)]; ok {
+		s.CheckedAt = e.check.checkedAt
+	}
+	if e, ok := r.pi[t.dir]; t.ID == "pi" && ok {
+		s.CheckedAt = e.check.checkedAt
+	}
 	if err != nil {
 		s.Status, s.Reason, s.Source = "unverified", "Could not check command sources", err.Error()
 		var runtimeErr *promptRuntimeError
 		if errors.As(err, &runtimeErr) {
 			s.Reason, s.Source = runtimeErr.reason, runtimeErr.detail
+			if runtimeErr.reason == "This skill is disabled in Codex configuration" || runtimeErr.reason == "Native skill metadata could not be loaded; invocation policy is unverified" {
+				s.Deployed = false
+			}
 		}
 		return s
 	} else if source != "" {
+		s.Deployed = false
 		s.Status, s.Reason, s.Source = "conflict", "This name is already in use", source
 		return s
 	}
-	if allPresent {
-		all := true
-		for path, b := range files {
-			if l.promptOwnedHash(t.ID, p.ID, path) != promptHash(b) {
-				all = false
-				break
-			}
-		}
-		if all {
-			s.Status = "enabled"
-		}
+	if s.Deployed {
+		s.Status = "enabled"
 	}
-	s.Reason, s.Source = codexPromptWarning(t)
+	s.Reason, s.Source = codexPromptWarning(t, r.native[nativePromptCacheKey(t)].check)
 	if t.ID == "dsh" && len(warnings) > 0 {
 		s.Reason = "DeepSeek Harness plugin requires an export unavailable in the installed dependency"
 		s.Source = strings.Join(warnings, "; ")
@@ -172,6 +185,11 @@ func (l *Library) promptConflict(t PromptTarget, p *Prompt) (string, error) {
 }
 
 func (l *Library) promptConflictWarnings(t PromptTarget, p *Prompt) (string, []string, error) {
+	return (&promptReader{Library: l}).promptConflictWarnings(t, p)
+}
+
+func (r *promptReader) promptConflictWarnings(t PromptTarget, p *Prompt) (string, []string, error) {
+	l := r.Library
 	var warnings []string
 	sources := []promptSource{{path: t.folder()}, {path: filepath.Join(t.dir, "skills"), skills: true}, {path: sharedSkillsDir(), skills: true}}
 	if t.ID == "codex-desktop" || t.ID == "codex" || t.ID == "dsh" {
@@ -179,12 +197,12 @@ func (l *Library) promptConflictWarnings(t PromptTarget, p *Prompt) (string, []s
 		sources = append(sources, promptSource{path: filepath.Join(t.dir, "skills", ".system"), skills: true})
 	}
 	if t.ID == "pi" {
-		if hit, err := l.piCommandConflict(t, p); err != nil || hit != "" {
+		if hit, err := r.piCommandConflict(t, p); err != nil || hit != "" {
 			return hit, nil, err
 		}
 	}
 	if t.ID == "codex" || t.ID == "dsh" {
-		hit, notices, err := l.nativePromptConflict(t, p)
+		hit, notices, err := r.nativePromptConflict(t, p)
 		if err != nil || hit != "" || t.ID == "codex" {
 			return hit, nil, err
 		}
@@ -214,7 +232,7 @@ func (l *Library) promptConflictWarnings(t PromptTarget, p *Prompt) (string, []s
 			continue
 		}
 		seen[source.path] = true
-		hit, err := l.scanPromptSource(t.ID, p, source)
+		hit, err := r.scanPromptSource(t.ID, p, source)
 		if err != nil || hit != "" {
 			return hit, nil, err
 		}
@@ -225,7 +243,36 @@ func (l *Library) promptConflictWarnings(t PromptTarget, p *Prompt) (string, []s
 // scanPromptSource scans only command and skill declarations, never executes a
 // harness, plugin or hook. Unreadable or malformed declarations remain unknown.
 func (l *Library) scanPromptSource(id string, p *Prompt, source promptSource) (string, error) {
-	var hit string
+	return (&promptReader{Library: l}).scanPromptSource(id, p, source)
+}
+
+func (r *promptReader) scanPromptSource(id string, p *Prompt, source promptSource) (string, error) {
+	key := promptScanSource{id, source}
+	declarations, ok := r.sources[key]
+	if !ok {
+		declarations = readPromptSource(id, source)
+		if r.sources == nil {
+			r.sources = map[promptScanSource][]promptDeclaration{}
+		}
+		r.sources[key] = declarations
+	}
+	for _, d := range declarations {
+		if d.err == nil && promptKey(d.name) != promptKey(p.Name) && (d.alias == "" || promptKey(d.alias) != promptKey(p.Name)) {
+			continue
+		}
+		if r.promptOwns(id, p.ID, d.path) {
+			continue
+		}
+		if d.err != nil {
+			return "", d.err
+		}
+		return d.path, nil
+	}
+	return "", nil
+}
+
+func readPromptSource(id string, source promptSource) []promptDeclaration {
+	var declarations []promptDeclaration
 	count := 0
 	err := filepath.WalkDir(source.path, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -266,12 +313,10 @@ func (l *Library) scanPromptSource(id string, p *Prompt, source promptSource) (s
 		if !isSkill && filepath.Ext(path) != ".md" {
 			return nil
 		}
-		if l.promptOwns(id, p.ID, path) {
-			return nil
-		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return err
+			declarations = append(declarations, promptDeclaration{path: path, err: err})
+			return nil
 		}
 		name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 		var alias string
@@ -280,14 +325,17 @@ func (l *Library) scanPromptSource(id string, p *Prompt, source promptSource) (s
 			s := strings.ReplaceAll(string(data), "\r\n", "\n")
 			front, ok := strings.CutPrefix(s, "---\n")
 			if !ok {
-				return fmt.Errorf("invalid skill metadata: %s", path)
+				declarations = append(declarations, promptDeclaration{path: path, err: fmt.Errorf("invalid skill metadata: %s", path)})
+				return nil
 			}
 			front, _, ok = strings.Cut(front, "\n---")
 			if !ok {
-				return fmt.Errorf("invalid skill metadata: %s", path)
+				declarations = append(declarations, promptDeclaration{path: path, err: fmt.Errorf("invalid skill metadata: %s", path)})
+				return nil
 			}
 			if err := yaml.Unmarshal([]byte(front), &m); err != nil {
-				return fmt.Errorf("%s: %w", path, err)
+				declarations = append(declarations, promptDeclaration{path: path, err: fmt.Errorf("%s: %w", path, err)})
+				return nil
 			}
 			name = m.Name
 			if name == "" {
@@ -308,13 +356,13 @@ func (l *Library) scanPromptSource(id string, p *Prompt, source promptSource) (s
 				name = strings.TrimSuffix(filepath.Base(path), ".md")
 			}
 		}
-		if promptKey(name) == promptKey(p.Name) || alias != "" && promptKey(alias) == promptKey(p.Name) {
-			hit = path
-			return fs.SkipAll
-		}
+		declarations = append(declarations, promptDeclaration{path: path, name: name, alias: alias})
 		return nil
 	})
-	return hit, err
+	if err != nil {
+		declarations = append(declarations, promptDeclaration{path: source.path, err: err})
+	}
+	return declarations
 }
 
 func promptConfiguredSources(t PromptTarget) ([]promptSource, error) {

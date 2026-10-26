@@ -130,10 +130,7 @@ func codexPromptDiagnostics(stderr *boundedPiOutput, warnings []string, inventor
 	return ""
 }
 
-func codexPromptWarning(t PromptTarget) (string, string) {
-	nativePromptChecks.Lock()
-	c := nativePromptChecks.m[nativePromptCacheKey(t)]
-	nativePromptChecks.Unlock()
+func codexPromptWarning(t PromptTarget, c nativePromptCheck) (string, string) {
 	if t.ID != "codex" || c.err != nil || len(c.notices) == 0 {
 		return "", ""
 	}

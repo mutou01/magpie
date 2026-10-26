@@ -11,6 +11,14 @@ semantic change description, and review rules.
 
 Write and review changes against the [code standards](docs/code-standards.md).
 
+## Prompt template regression
+
+Every prompt-template fix must pass the dedicated
+[prompt regression gate](docs/subsystems/library.md#prompt-template-regression-gate),
+including all four original Harness invocations. Missing installations or skipped
+native acceptance are failures, not substitutes for evidence. The gate is limited
+to prompt-template behavior; it does not run the full repository regression.
+
 ## Community PRs
 
 Before reviewing a community PR, read [contributors](docs/contributors.md):

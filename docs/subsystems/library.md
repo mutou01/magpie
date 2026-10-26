@@ -125,6 +125,28 @@ artifacts. This does not claim coverage of future dynamically added commands.
 Save rechecks passive evidence under the Library lock. Missing template bodies
 are never treated as empty text.
 
+[`prompt_reader.go`](../../internal/library/prompt_reader.go) reuses native/Pi
+evidence and parsed static declarations only within one read-only phase. A save
+preflights each Harness's publications before writing them, then reads fresh
+evidence for retirement; its response builds another reader. Nothing is cached
+across those mutations or requests. Per-template name matching, disablement,
+ownership and destination bytes remain checked, including the existing check
+immediately before each write or removal. Saving one template still synchronizes
+the other selected templates.
+
+Template states expose `deployed` independently of the native verification
+`status`. It means every owned deployment file matches the current template's
+body and invocation policy, with no known disablement or name conflict. A missing
+or invalidated process-local check cannot erase that file fact, but still blocks
+new writes through the existing status gate. Missing, unreadable or externally
+edited files, unsaved deployment changes and invalid own invocation policy never
+claim deployment. The template row lights only selected deployed targets;
+verification freshness stays in the tooltip. A stale check alone is not a row
+alarm. Other unknown-source errors still warn. The overview instead shows each
+installed Harness's check status as a focusable icon, with its reason, source and
+check time in the accessible tooltip; a successful inventory is labelled
+"Availability check passed", independently of whether any template selects it.
+
 Turning the switch from off to on checks every installed supported Harness,
 including an empty library, and reports results independently. Repeating on
 does not restart checks. Adding a target checks only that Harness and the
@@ -340,8 +362,8 @@ switch is local persisted state; native evidence and check times are not persist
 The template list reuses the skills' `.lib-find` search layout and `agentChips`
 icons, including hover/focus expansion. Search filters names and bodies on input
 using NFKC plus lowercase; Refresh and New template stay in the heading. The
-editor retains its detailed target controls. Icons light only for `enabled`
-deployment states; while the total switch is off they show retained selections.
+editor retains its detailed target controls. Icons light for selected `deployed`
+states; while the total switch is off they show retained selections.
 The list has no permanent native-verification badge: that explanation remains
 in the icon titles and editor. Abnormal icons keep their warning dots and
 reasons; selected abnormal targets still produce Needs attention.
@@ -419,6 +441,36 @@ reading, discarding a response if a mutation answered meanwhile.
 - Skills installed together (`InstallSkills`, `InstallMarketSkill`, `AddNewSkills`, through `installFrom` and `installChange`) install each on its own. One the library lists from the same source, or a folder in the library's own skills folder holding exactly that skill's files (left by an install that stopped before the library was saved), is had already and goes in `Result.Had`. Its files are never written, so the user's edits stay. Another skill by that name, listed or only in the folder, or a folder that can't be read, is left as it is and goes in `Result.Skipped` with why. The rest are installed and named in `Result.Installed`. Only when nothing was installed or had does the change fail, with the first reason.
 
 ## Verification
+
+### Prompt template regression gate
+
+Every prompt-template fix runs the Windows-only dedicated gate using the machine's
+original installations. It builds the current source into its own isolated
+evidence directory:
+
+```powershell
+./scripts/test-prompt-templates.ps1 -ClaudeBin '<original claude.exe>' -PiCli '<original Pi cli.js>' -CodexBin '<original codex.exe>' -DSHHome '<original DSH home>' -NodeBin '<original node.exe>'
+```
+
+The existing Playwright installation must be resolvable by that Node executable;
+set `NODE_PATH` to its installed module directory if it is outside the repository.
+The gate checks this prerequisite before building and never installs dependencies.
+
+[`test-prompt-templates.ps1`](../../scripts/test-prompt-templates.ps1) runs the
+public prompt tests, Chromium/WebKit in five languages, prompt translation checks
+and all four original Harnesses against loopback models. Native acceptance must
+use the artifact produced by public Save, including editing it before invocation;
+assertions check the current body and trailing instruction, absence of the
+superseded body, and ordinary chat without the template body. Installation and
+configuration fingerprints are compared within each acceptance script's recorded
+scope. No missing Harness or skipped native acceptance counts as a pass. Stage
+results and logs are written to an isolated evidence directory. This gate does
+not run the full repository regression or claim Codex Desktop UI acceptance.
+DSH's general invocation accepts a healthy effective namespace or its verified
+optional missing-export notice; the separate optional-failure regression still
+requires that native failure and verifies it remains present during invocation.
+
+### Other Library verification
 
 ```sh
 go test -tags nogui ./internal/library ./internal/gui -run '^TestPromptTemplate' -count=1
