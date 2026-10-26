@@ -439,6 +439,10 @@
     <div class="who"><div class="name" data-t>Codex subagents on any model</div><div class="sub" data-t>A GPT lead spawns subagents on magpie’s other models. New threads only; Codex’s own multi_agent_v2 still wins</div><div class="sub err" id="codexAgentsV1Warn" hidden></div></div>
     <div id="codexAgentsV1Segs"></div>
   </div>
+  <div class="row pref" id="codexSubagentModelRow" hidden>
+    <div class="who"><div class="name" data-t>Codex subagent model</div></div>
+    <div class="val" id="codexSubagentModelPick"></div>
+  </div>
   <div class="row pref" id="fullContextRow">
     <div class="who"><div class="name" data-t>Long conversations</div><div class="sub" data-t>Codex and Claude Code compact at 272K (non-Claude [1m] too) or the size typed; full window: slower, costlier</div></div>
     <div id="fullContextSegs"></div>
@@ -483,6 +487,7 @@
 <script src="plugins/usage/client.js"></script>
 <script src="plugins/redact/i18n.js"></script>
 <script src="plugins/redact/client.js"></script>
+<script src="plugins/otel/i18n.js"></script>
 <script src="purposes.js"></script>
 <script src="app.js"></script>
 <script src="plugins.js"></script>
@@ -490,6 +495,7 @@
 <script src="context.js"></script>
 <script src="plugins/usage/page.js"></script>
 <script src="plugins/redact/page.js"></script>
+<script src="plugins/otel/page.js"></script>
 <script src="start.js"></script>
 </body>
 </html>

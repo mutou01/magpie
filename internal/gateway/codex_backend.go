@@ -100,6 +100,10 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 			writeError(w, provider.Responses, 400, err.Error())
 			return
 		}
+		// a turn of the conversation's own: the model its side calls may
+		// follow (codexFollowTo)
+		kind := requestCallKind(r.Header, requestSessionMetadata(r.Header, body))
+		s.codexLeads.saw(r, kind, model)
 		// a thread's title, where Settings sends it (#705) — the request
 		// still on Codex's own model, through its sign-in, when it says
 		// nothing of them
@@ -112,6 +116,10 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 				s.codexDescription(w, r, body, to)
 				return
 			}
+			if to := codexSummariesTo(r.Header, body, false); to != "" {
+				s.codexSummary(w, r, body, to)
+				return
+			}
 			if to := codexPredictionsTo(r.Header, body, false); to != "" {
 				s.codexPrediction(w, r, body, to)
 				return
@@ -119,9 +127,19 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 			// a subagent on one of Codex's own models, put on the model
 			// set for Codex's subagents, a ChatGPT account's in magpie;
 			// the request on the model asked for when it can't be, the
-			// trace saying why (codexUpstreamOn, serve)
+			// trace saying why (codexUpstreamOn, serve). One with nothing
+			// set for it, a subagent's or a memory call,
+			// on the model its conversation is on when that is one of
+			// magpie's, not on the ChatGPT sign-in (codexFollowTo)
 			if !strings.Contains(model, "/") {
-				pick := codexSubagentPick(r, agentOf(r), requestCallKind(r.Header, requestSessionMetadata(r.Header, body)), model, body)
+				pick := codexSubagentPick(r, agentOf(r), kind, model, body)
+				if to := s.codexFollowTo(r, agentOf(r), kind, model, body); to != "" && pick == nil {
+					if usage.PurposeOf(kind) == "kind:collab_spawn" {
+						pick = &SubagentPick{Asked: model, To: to}
+					} else {
+						body, model = withModel(body, to), to
+					}
+				}
 				r = withSubagentPick(r, pick)
 				if pick.Moved() {
 					body, model = withModel(body, pick.To), pick.To
@@ -268,16 +286,16 @@ func sealedTaskError(model, lead, earlier string) string {
 }
 
 // sealedWayOut is the way to subagents on any model from a lead on
-// Codex's own models (#2245): Settings' "Codex subagents on any model"
-// (settings.CodexAgentsV1, #141) has the lead hand its subagents their
-// tasks as text. Off, the refusal names it; on, a thread still sealing
-// its tasks is on V2 all the same: begun before it was on, or held there
-// by Codex's own features.multi_agent_v2.
+// Codex's own models (#2245): "Codex subagents on any model", in Codex's
+// settings on the Agents page (settings.CodexAgentsV1, #141), has the
+// lead hand its subagents their tasks as text. Off, the refusal names
+// it; on, a thread still sealing its tasks is on V2 all the same: begun
+// before it was on, or held there by Codex's own features.multi_agent_v2.
 func sealedWayOut() string {
 	if settings.Load().CodexAgentsV1 {
-		return ` "Codex subagents on any model" is on in magpie's Settings, but this thread runs Codex's multi-agent V2, whose tasks are sealed: it began before the setting was turned on, or Codex's own features.multi_agent_v2 is on in its config. Start a new thread, with features.multi_agent_v2 off.`
+		return ` "Codex subagents on any model" is on in Codex's settings on magpie's Agents page, but this thread runs Codex's multi-agent V2, whose tasks are sealed: it began before the setting was turned on, or Codex's own features.multi_agent_v2 is on in its config. Start a new thread, with features.multi_agent_v2 off.`
 	}
-	return ` For subagents on any model while the lead is on a ChatGPT model, turn on "Codex subagents on any model" in magpie's Settings and start a new thread: the lead then hands its subagents their tasks as text.`
+	return ` For subagents on any model while the lead is on a ChatGPT model, turn on "Codex subagents on any model" in Codex's settings on magpie's Agents page and start a new thread: the lead then hands its subagents their tasks as text.`
 }
 
 // sealedTaskItself says what a sealed task is (#1855): spawn_agent's
@@ -411,7 +429,12 @@ func loggedAnswers(convs ...string) []loggedAnswer {
 		return nil
 	}
 	var all []loggedAnswer
+	// a provider renamed since answered by the id it has now, the one
+	// its candidates have (cybercaius: a renamed provider was told apart
+	// from itself)
+	renamed := provider.UsageRenames()
 	usage.Visit(time.Now().Add(-sealerKeep), func(r usage.Record) {
+		r.Provider = renamed.Of(r.Provider, r.Time)
 		if r.Provider == "" || r.Provider == "magpie" || r.IsRejected() || r.IsReported() || r.Status <= 0 || r.Status >= 400 || r.Computer != "" || isTitleKind(r.Kind) {
 			return
 		}
@@ -501,22 +524,22 @@ func leadFirst(scope, parent string, cands []candidate, pl planned) ([]candidate
 // fields (including ordinary model history) keep their existing handling.
 func hasSealedAgentMessage(body []byte) bool {
 	var request map[string]json.RawMessage
-	if decodeJSON(body, &request) != nil {
+	if decodeJSONView(body, &request) != nil {
 		return false
 	}
-	var items []json.RawMessage
-	if decodeJSON(request["input"], &items) != nil {
+	items, isList := inputList(request["input"])
+	if !isList {
 		return false
 	}
 	for _, raw := range items {
 		var item struct {
-			Type    string            `json:"type"`
-			Content []json.RawMessage `json:"content"`
+			Type    string          `json:"type"`
+			Content json.RawMessage `json:"content"`
 		}
-		if decodeJSON(raw, &item) != nil || item.Type != "agent_message" {
+		if decodeJSONView(raw, &item) != nil || item.Type != "agent_message" {
 			continue
 		}
-		for _, content := range item.Content {
+		for _, content := range elementsOf(trimJSON(item.Content)) {
 			var part struct {
 				Type             string `json:"type"`
 				EncryptedContent string `json:"encrypted_content"`
@@ -871,7 +894,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 	if r.Method == http.MethodPost {
 		var unmask func()
 		var err error
-		w, body, unmask, maskedHits, err = redactedHits(w, body)
+		w, body, unmask, maskedHits, err = redactedHits(r.Context(), w, body)
 		defer unmask()
 		if err != nil {
 			writeError(w, provider.Responses, maskStatus(err), err.Error())
@@ -1511,7 +1534,7 @@ func withoutItem(body []byte, id string) ([]byte, bool) {
 		return nil, false
 	}
 	q["input"], _ = json.Marshal(kept)
-	b, err := json.Marshal(q)
+	b, err := marshalJSON(q)
 	return b, err == nil
 }
 
@@ -2539,6 +2562,33 @@ func forVendor(p provider.Provider, body []byte) []byte {
 	return nb
 }
 
+// keepsAccessPrograms says a Responses request to p goes with its top-level
+// access_programs, the Cyber program a request asks the model under
+// (OpenAI's Daybreak, magpie-releases#18): to the ChatGPT backend, to
+// OpenAI's API, to another magpie (whose own upstream decides), and to a
+// relay that takes Codex's requests as Codex sent them (CodexAsSent). Codex
+// itself sends the field to nobody else: only with a ChatGPT sign-in, or an
+// API key on its provider named "openai" (codex-rs cyber_access_program.rs,
+// for_auth and for_provider), which is how it comes to magpie. OpenCode Go
+// answers it, for DeepSeek and GLM, with a 503 "Endpoint is unavailable"
+// that says nothing of the field (#3172), and no other vendor has a program
+// to read in it.
+func keepsAccessPrograms(p provider.Provider, in http.Header) bool {
+	return p.Account != nil && p.Account.Agent == "codex" ||
+		strings.HasSuffix(p.Host(), "openai.com") ||
+		p.IsRemoteMagpie() ||
+		p.CodexAsSent && p.Account == nil && fromCodex(in)
+}
+
+// withoutAccessPrograms is body without its top-level access_programs, the
+// rest byte for byte (withoutTopMember).
+func withoutAccessPrograms(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`"access_programs"`)) {
+		return body
+	}
+	return withoutTopMember(body, "access_programs")
+}
+
 // forVendorChanges reports whether forVendor has anything to leave out of
 // body, read as it reads it, without decoding the conversation: Codex
 // sends what the rewrite looks for by name in every request, and its
@@ -2822,7 +2872,7 @@ func plainCompact(body []byte) []byte {
 		userMessage(codexCompactPrompt),
 	})
 	delete(q, "previous_response_id")
-	nb, err := json.Marshal(q)
+	nb, err := marshalJSON(q)
 	if err != nil {
 		return body
 	}
