@@ -49,7 +49,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           if (failRemove) { failRemove = false; return route.fulfill({ status: 500, body: "fixture remove failed" }); }
           if (holdRemove) { holdRemove = false; await new Promise(resolve => { releaseRemove = resolve; }); }
           items = items.filter(x => x.id !== body.id);
-          return route.fulfill({ json: { part: "prompts", prompts: prompts(), result: { changed: [], problems: body.id === "b" ? [{ agent: "claude", error: "fixture externally edited deployment kept" }] : [] } } });
+          return route.fulfill({ json: { part: "prompts", prompts: prompts(), result: { changed: [], problems: body.id === "b" ? [{ agent: "claude", what: "prompt:template-b", error: "fixture externally edited deployment kept" }] : [] } } });
         }
         if (p.startsWith("/api/")) return route.fulfill({ json: p === "/api/usage/quotas" ? [] : {} });
         const file = path.join(assets, p === "/" ? "index.html" : p);
@@ -83,7 +83,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await agentRequest;
       try {
         assert(await remove("b").isDisabled(), "another template's target update blocks every list deletion");
-        const refresh = await page.locator('.lib-prompts .lib-cardhead button:not([role="switch"])').first().elementHandle();
+        const refresh = await page.locator('.lib-prompts .lib-prompt-refresh').elementHandle();
         const checkedBefore = checkPosts.length;
         await refresh.press("Space");
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -114,7 +114,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator('textarea[data-lib="set:default"]').fill("尚未保存的共享指令");
       holdRead = true;
       const staleRead = page.waitForRequest(r => r.url().endsWith("/library/prompts"));
-      const staleRefresh = await page.locator('.lib-prompts .lib-cardhead button:not([role="switch"])').first().elementHandle();
+      const staleRefresh = await page.locator('.lib-prompts .lib-prompt-refresh').elementHandle();
       await staleRefresh.press("Space");
       await staleRead;
       await remove("b").press("Space");

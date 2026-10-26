@@ -5,6 +5,9 @@
 const I18N = {
   zh: {
     "Availability check passed": "可用性检查通过",
+    "Enabled {n}/{total} templates": "已启用 {n}/{total} 个模板",
+    "Enable all current templates": "启用当前全部模板",
+    "Disable all current templates": "停用当前全部模板",
     "Prompt templates": "提示词模板",
     "Prompt templates are turned off": "提示词模板已关闭",
     "Check native command availability again": "需要重新检查原生命令可用性",
@@ -3984,6 +3987,9 @@ const I18N = {
   },
   "zh-TW": {
     "Availability check passed": "可用性檢查通過",
+    "Enabled {n}/{total} templates": "已啟用 {n}/{total} 個範本",
+    "Enable all current templates": "啟用目前全部範本",
+    "Disable all current templates": "停用目前全部範本",
     "Prompt templates": "提示詞範本",
     "Prompt templates are turned off": "提示詞範本已關閉",
     "Check native command availability again": "需要重新檢查原生命令可用性",
@@ -7948,6 +7954,9 @@ const I18N = {
   },
   ja: {
     "Availability check passed": "利用可否の確認に成功",
+    "Enabled {n}/{total} templates": "{n}/{total} 件のテンプレートが有効",
+    "Enable all current templates": "現在のすべてのテンプレートを有効化",
+    "Disable all current templates": "現在のすべてのテンプレートを無効化",
     "Prompt templates": "プロンプトテンプレート",
     "Prompt templates are turned off": "プロンプトテンプレートはオフです",
     "Check native command availability again": "ネイティブコマンドの利用可否を再確認してください",
@@ -11914,6 +11923,9 @@ const I18N = {
   },
   de: {
     "Availability check passed": "Verfügbarkeitsprüfung bestanden",
+    "Enabled {n}/{total} templates": "{n}/{total} Vorlagen aktiviert",
+    "Enable all current templates": "Alle aktuellen Vorlagen aktivieren",
+    "Disable all current templates": "Alle aktuellen Vorlagen deaktivieren",
     "Prompt templates": "Prompt-Vorlagen",
     "Prompt templates are turned off": "Prompt-Vorlagen sind ausgeschaltet",
     "Check native command availability again": "Native Befehlsverfügbarkeit erneut prüfen",

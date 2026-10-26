@@ -43,7 +43,7 @@ must never modify the Harness program, source or protocol: it reads and executes
 the original installation and writes templates only to native resource folders.
 
 [`prompts.go`](../../internal/library/prompts.go) owns `Prompt`, `ReadPrompts`,
-`CheckPrompt`, `SavePrompt`, `SetPromptAgents` and `RemovePrompt`. UTF-8 bodies live at
+`CheckPrompt`, `SavePrompt`, `SetPromptAgents`, `SetPromptHarnessContext` and `RemovePrompt`. UTF-8 bodies live at
 `library/prompts/<id>.md`. [`prompt_store.go`](../../internal/library/prompt_store.go)
 keeps metadata, selected target ids and this machine's deployment paths/hashes
 in the authoritative, versioned `library/prompts.json`. `library.json` retains a
@@ -134,6 +134,16 @@ ownership and destination bytes remain checked, including the existing check
 immediately before each write or removal. Saving one template still synchronizes
 the other selected templates.
 
+First publication exposes a flushed, closed staging file without replacing a
+name claimed after the conflict check. On Windows,
+[`prompt_publish_windows.go`](../../internal/library/prompt_publish_windows.go)
+uses a same-directory `MoveFileExW` without replacement or cross-volume copying,
+avoiding the hard-link/delete sequence implicated in later replacement failures.
+Extended local and UNC paths retain long-path support. Other platforms keep
+hard-link publication. Updates to existing owned files still use the ownership
+hash check and `edit.WriteAtomic`; failures never fall back to deleting the
+destination or writing its body in place.
+
 Template states expose `deployed` independently of the native verification
 `status`. It means every owned deployment file matches the current template's
 body and invocation policy, with no known disablement or name conflict. A missing
@@ -142,10 +152,11 @@ new writes through the existing status gate. Missing, unreadable or externally
 edited files, unsaved deployment changes and invalid own invocation policy never
 claim deployment. The template row lights only selected deployed targets;
 verification freshness stays in the tooltip. A stale check alone is not a row
-alarm. Other unknown-source errors still warn. The overview instead shows each
-installed Harness's check status as a focusable icon, with its reason, source and
-check time in the accessible tooltip; a successful inventory is labelled
-"Availability check passed", independently of whether any template selects it.
+alarm. Other unknown-source errors still warn. The heading's installed-Harness
+controls aggregate actual deployments and retain reason, source and check time
+in their accessible descriptions. A successful inventory is labelled
+"Availability check passed", independently of whether any template selects it;
+the batch-control behavior is specified with the `harness` endpoint below.
 
 Turning the switch from off to on checks every installed supported Harness,
 including an empty library, and reports results independently. Repeating on
@@ -344,7 +355,7 @@ empty array clears them. Setup snapshots keep selections by stable template
 id and restore those selections without replacing the template text.
 
 The GUI API has `GET /api/library/prompts` and `POST` actions `check`, `save`,
-`agents`, `enabled` and `remove` below that path. `enabled` requires an explicit
+`agents`, `enabled`, `harness` and `remove` below that path. `enabled` requires an explicit
 boolean and changes the total switch. `checks` contains per-Harness inventory
 status independently of individual templates; completed native checks expose
 `checkedAt` as Unix milliseconds. `agents` accepts `{id, agents}`: a stable
@@ -358,6 +369,33 @@ hashes and backups, with independent failures per target. This endpoint never
 starts a Harness. All mutations answer `part: "prompts"`, the current `PromptsView` and
 `Result`, preserving other Library sections and their unsaved drafts. The total
 switch is local persisted state; native evidence and check times are not persisted.
+
+`harness` accepts `{target, enabled}` with an explicit boolean. It changes that
+one Harness for all templates present when the request begins, including items
+hidden by search, without changing the total switch or future-template defaults.
+The total switch must already be on. Enabling checks only that Harness, reusing
+valid successful evidence, then reads the latest bodies and selections under the
+Library lock. Templates created while checking are not added to this operation.
+Usable new selections are added; existing selections are retried by the normal
+sync, and blocked items produce individual `Result.Problems`. Other Harness
+selections are retained. Disabling does not start a Harness; normal ownership
+and backup rules retire unchanged files and preserve/report external edits.
+One batch performs one prompt sync, rather than a separate mutation per template.
+An empty enabled Library requires no runtime check.
+
+The detected Harness controls sit immediately after the total switch in the
+heading and wrap at narrow widths. They toggle the current templates: partial
+deployment enables missing items, and complete deployment toggles all off.
+They are disabled while the total switch is off, the Library is empty, or a
+template write is pending. Each control shows normal color when at least one
+selected template is actually deployed, otherwise grey, with the deployed/total
+count in its hover/focus description. Only a Harness-level check failure shows
+a red dot; missing or expired evidence and individual template conflicts do not.
+Intact deployments retain their color when evidence expires. Batch problems are
+listed by template and reason. Batch writes exclude row writes, deletion, switch
+changes and refreshes until the response or failure-recovery read completes.
+Searching remains available during a batch; the response preserves its value,
+focus and selection rather than returning focus from the search field to an icon.
 
 The template list reuses the skills' `.lib-find` search layout and `agentChips`
 icons, including hover/focus expansion. Search filters names and bodies on input

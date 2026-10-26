@@ -328,8 +328,8 @@ func (l *Library) promptSharedPathNeeded(all []PromptTarget, id, pid, path, hash
 	return false
 }
 
-// Link a flushed staging file into a new name without replacing a file created
-// after the conflict check. Filesystems without hard links report a problem.
+// Publish a flushed staging file without replacing a file created after the
+// conflict check. Existing owned files still use the normal atomic editor.
 func writePromptFile(path string, data []byte, expected string) error {
 	info, err := os.Lstat(path)
 	if err == nil {
@@ -363,5 +363,5 @@ func writePromptFile(path string, data []byte, expected string) error {
 	if err := edit.WriteAtomic(stage, data); err != nil {
 		return err
 	}
-	return os.Link(stage, path)
+	return publishPromptFile(stage, path)
 }

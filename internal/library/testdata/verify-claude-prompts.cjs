@@ -73,18 +73,35 @@ async function main() {
         assert.equal(response.status, 200, "Public prompt API succeeds"); return response.json();
       };
       const state = states => states.find(s => s.agent === "claude");
+      const deploymentDiagnostic = async (stage, response, item) => JSON.stringify({ stage,
+        selected: item?.agents?.includes("claude") ?? false,
+        status: state(item?.states || [])?.status, deployed: state(item?.states || [])?.deployed ?? false,
+        reason: state(item?.states || [])?.reason || "",
+        artifact: await (async () => {
+          const file = path.join(home, "commands", "public-save-probe.md");
+          try {
+            const info = await fs.stat(file), bytes = await fs.readFile(file, "utf8");
+            return { exists: true, mode: info.mode & 0o777, links: info.nlink,
+              initialBody: bytes.includes(initialBody), editedBody: bytes.includes(templateBody) };
+          } catch (error) { return { exists: false, code: error.code }; }
+        })(),
+        problems: (response.result?.problems || []).map(p => ({ agent: p.agent,
+          what: p.what?.startsWith("prompt:") ? "prompt" : "other",
+          operation: /^(open|rename|link|mkdir|remove|CreateFile|chmod|read|write)\b/i.exec(p.error || "")?.[1] || "unknown",
+          pathRole: (p.error || "").includes(path.join(home, "commands")) ? "deployed-command" : "other",
+          category: /access.*denied|permission/i.test(p.error) ? "permission" : /used by another process|sharing violation/i.test(p.error) ? "sharing" : /no such file|cannot find/i.test(p.error) ? "missing" : /externally edited|user-owned/i.test(p.error) ? "protected" : "other" })) });
       assert.equal((await api("")).enabled, false);
       assert.equal(state(await api("check", { name: "public-save-probe", target: "claude", passive: true })).status, "disabled");
       assert.equal((await api("enabled", { enabled: true })).prompts.enabled, true);
       assert.equal(state(await api("check", { name: "public-save-probe", target: "claude", force: true })).status, "available");
       const saved = await api("save", { name: "public-save-probe", text: initialBody, agents: ["claude"] });
       const item = saved.prompts.items.find(p => p.name === "public-save-probe");
-      assert(item); assert.equal(state(item.states).status, "enabled");
+      assert(item); assert.equal(state(item.states).status, "enabled", state(item.states).status === "enabled" ? undefined : await deploymentDiagnostic("initial-save", saved, item));
       deployedFile = path.join(home, "commands", "public-save-probe.md");
       assert((await fs.readFile(deployedFile, "utf8")).includes(initialBody), "Initial public Save deploys its body");
       const edited = await api("save", { id: item.id, name: item.name, text: templateBody, agents: ["claude"] });
       const editedItem = edited.prompts.items.find(p => p.id === item.id);
-      assert(editedItem); assert.equal(editedItem.text, templateBody); assert.equal(state(editedItem.states).status, "enabled");
+      assert(editedItem); assert.equal(editedItem.text, templateBody); assert.equal(state(editedItem.states).status, "enabled", state(editedItem.states).status === "enabled" ? undefined : await deploymentDiagnostic("edit-save", edited, editedItem));
       deployed = await fs.readFile(deployedFile);
       assert(deployed.toString("utf8").includes(templateBody) && !deployed.toString("utf8").includes(initialBody), "Editing through public Save replaces the same artifact with the current body");
     } finally { web.kill(); await webExit; }

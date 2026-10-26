@@ -521,6 +521,83 @@ func SetPromptAgents(id string, agents []string) (*Result, error) {
 	return res, err
 }
 
+// SetPromptHarnessContext changes one Harness's selection for current templates.
+// Other Harness selections and template bodies remain unchanged.
+func SetPromptHarnessContext(ctx context.Context, target string, enabled bool) (*Result, error) {
+	if _, ok := promptTargetByID(promptTargets(), target); !ok {
+		return nil, fmt.Errorf("unknown prompt target: %s", target)
+	}
+	mu.Lock()
+	l, err := load()
+	var ids []string
+	if err == nil {
+		if !l.promptsEnabled() {
+			err = fmt.Errorf("Prompt templates are turned off")
+		} else {
+			for _, p := range l.Prompts {
+				ids = append(ids, p.ID)
+			}
+		}
+	}
+	mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return &Result{Changed: []string{}, Problems: []Problem{}}, nil
+	}
+	if enabled {
+		if _, err := CheckPromptContext(ctx, PromptChange{Target: target}); err != nil {
+			return nil, err
+		}
+	}
+	var blocked []Problem
+	res, err := changePrompts(func(l *Library) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !l.promptsEnabled() {
+			return fmt.Errorf("Prompt templates are turned off")
+		}
+		t, _ := promptTargetByID(promptTargets(), target)
+		r := &promptReader{Library: l}
+		for _, p := range l.Prompts {
+			// A template created while the native check runs is outside this operation.
+			if !slices.Contains(ids, p.ID) {
+				continue
+			}
+			if !enabled {
+				p.Agents = slices.DeleteFunc(p.Agents, func(id string) bool { return id == target })
+				continue
+			}
+			if slices.Contains(p.Agents, target) {
+				continue // Sync retries existing selections and reports protected files.
+			}
+			body, bodyErr := os.ReadFile(promptPath(p.ID))
+			if bodyErr == nil {
+				bodyErr = checkPromptText(string(body))
+			}
+			state := r.promptState(t, p, string(body))
+			if bodyErr != nil {
+				state.Status, state.Reason, state.Source = "unverified", "Could not read template text", ""
+			}
+			if !promptUsable(state) {
+				blocked = append(blocked, Problem{Agent: target, What: "prompt:" + p.Name, Error: strings.TrimSpace(state.Reason + " " + state.Source)})
+				continue
+			}
+			p.Agents = promptAgents(append(p.Agents, target))
+		}
+		return nil
+	})
+	if res != nil {
+		res.Problems = append(res.Problems, blocked...)
+	}
+	return res, err
+}
+
 // RemovePrompt removes a template from the library.
 func RemovePrompt(id string) (*Result, error) {
 	return changePrompts(func(l *Library) error {

@@ -3,7 +3,8 @@
 .lib-prompts { margin-top: 18px; }
 .lib-prompts .lib-cardhead { padding-bottom: 4px; flex-wrap: wrap; }
 .lib-prompts > .lib-aside { padding: 0 12px; }
-.lib-prompts > .lib-prompt-checks { padding: 0 12px; max-width: none; justify-content: flex-start; }
+.lib-prompts .lib-prompt-checks { max-width: none; justify-content: flex-start; }
+.lib-prompt-checks .lib-prompt-harness-check.warn::after { background: var(--red); }
 .lib-prompt-finder { margin: 10px 12px; }
 .lib-prompt-editor textarea.lib-prompt-text { min-height: 150px; resize: vertical; }
 .lib-prompt-row .lib-tags:empty { display: none; }

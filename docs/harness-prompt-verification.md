@@ -548,6 +548,120 @@ It did not reproduce in the subsequent full run or the final gate; its cause
 is unconfirmed. Bounded event diagnostics remain in that test, and the final
 test retains keyboard activation and the original assertions/time limit.
 
+## Harness heading batch controls (2026-10-26)
+
+The heading now places the detected Harness controls after the total switch.
+Each control enables all current templates, including search-hidden items, or
+disables all when every template is actually deployed. Partial deployment keeps
+normal color and exposes its count; zero deployment is grey. Only a failed
+Harness inventory adds a red dot. Missing or expired evidence and per-template
+conflicts do not add that dot. The total switch must already be on.
+
+The public batch route first failed with HTTP 404 for disable, then HTTP 400
+(`Check native command availability again`) for enable before implementation.
+The passing public tests cover partial success, selected-but-missing deployment,
+conflict protection, isolated target checks, successful-cache reuse, cancellation,
+empty/off libraries, concurrent creation and edits, and Codex body/policy group
+protection. The batch captures existing IDs and uses their latest records; it
+does not change future-template defaults or overwrite other Harness selections.
+Disable and empty batches do not launch Harnesses.
+
+Browser tests first exposed the old placement, missing batch request and stale
+warning behavior. They then caught initial rendering against an unmounted DOM
+and response-driven loss of search focus/selection. The fixes initialize the
+constructed card directly and preserve stable search focus through redraws.
+The affected two browser files passed 74/74 tests with zero skips across
+Chromium/WebKit and five languages in 52.81 seconds. Coverage includes
+360/420/560/1100-pixel bounds, keyboard activation, hidden templates, busy-write
+exclusion, partial failure details and GET recovery after a lost write response.
+Focused red/green logs are retained under
+`C:/Users/Administrator/AppData/Local/Temp/magpie-prompt-harness-bulk/` and
+`C:/Users/Administrator/AppData/Local/Temp/magpie-prompt-reader-final-gate/`.
+
+The first unified attempt passed public regressions in 347.50 seconds but
+stopped with 86/98 browser tests passing. Old delete tests located Refresh as
+the first heading button; that position now belongs to a Harness. The tests
+now use `.lib-prompt-refresh` while retaining their stale-read and deletion
+assertions, and the delete fixture includes the public `Problem.what` field.
+The failed attempt is retained under
+`C:/Users/Administrator/AppData/Local/Temp/magpie-prompt-harness-bulk-unified-20261026/`;
+it did not execute the original-Harness stages.
+
+A subsequent run exposed a 20-pixel WebKit scroll difference after viewport
+changes. Bounded DOM diagnostics did not directly recapture that difference;
+its exact cause remains unconfirmed. The test now establishes stable viewport,
+focus and geometry before recording its baseline, while retaining exact
+scroll-position equality after the target write. No production scroll code or
+timeout was changed. All four browser files then passed 98/98 tests with zero
+skips in 73.31 seconds; the log is
+`C:/Users/Administrator/AppData/Local/Temp/magpie-prompt-reader-final-gate/four-files-stable-baseline.log`.
+
+A final review found that an added permanent list of operation problems kept a
+previous conflict after a successful row update and Refresh. A public browser
+test reproduced both stale entries while the deployment count correctly reached
+2/2. The redundant permanent list was removed; batch failures remain individually
+reported in the operation status, and row states continue to reflect current
+deployment evidence. The second unified attempt was stopped during public tests
+before this production correction and is not a completed acceptance run.
+The new stale-result regression passed after removal, and all four browser files
+passed 108/108 tests with zero skips in 75.81 seconds. The log is
+`C:/Users/Administrator/AppData/Local/Temp/magpie-prompt-reader-final-gate/four-files-final-stale-result-fixed.log`.
+
+The next unified run passed public tests, all 108 browser cases and translation
+checks, but failed Claude's public Edit Save before the original CLI started:
+the deployed file remained at its initial body after an atomic-rename permission
+error. The same failure reproduced against the pre-change baseline. Independent
+Node and Go hard-link publication fixtures reproduced replacement failures; the
+Go fixture also failed without a Node reader, while ordinary-file controls
+passed. Target/staging/parent ACLs allowed the current user full control without
+deny rules or read-only attributes. Post-failure probes found no occupying
+process; they cannot identify a transient holder at the failing instant.
+Evidence remains under
+`C:/Users/Administrator/AppData/Local/Temp/magpie-prompt-harness-bulk/`
+(`prompt-bulk-review-forensics.json` and its referenced files). This identifies
+the affected publication sequence, not a particular system process.
+
+Windows prompt publication now uses a same-directory native move with flags
+zero instead of creating and deleting a temporary hard-link alias. It retains
+no-overwrite behavior, stage flushing/closing and failure cleanup. Existing
+ownership checks and atomic updates, other platforms and retry budgets remain
+unchanged. The public Save/Edit assertions and intermediate body read remain in
+the acceptance script; no retry-until-pass or bypass of that failure is allowed.
+Publication protection tests were recorded before this production change,
+including a competing file created after preflight, concurrent publishers and
+Unicode/extended long paths. The final gate below validated this changed source.
+
+After the change, all five publication/path tests passed, including actual
+Unicode paths longer than 300 characters and UNC prefix conversion. No live UNC
+share was exercised. A separate, predeclared 32-cycle public Save/read/Edit Save
+check passed every cycle with exact edited-artifact checks, no model request and
+three original-file fingerprints unchanged. Its first extra exact-body assertion
+had omitted Claude's required frontmatter; that fixture error was retained and
+corrected before the recorded 32-cycle run, without changing production or
+removing the intermediate read. Current Windows/Linux targeted vet/build and
+related syntax/format checks passed; evidence is under
+`C:/Users/Administrator/AppData/Local/Temp/magpie-prompt-harness-bulk-final-move-20261026/`
+(`latest-static.json`, `latest-node-static.json`, `latest-format.json`).
+
+The final dedicated gate exited zero with all eight stages passing: current
+build 3.54s, public API 349.31s, Chromium/WebKit five-language UI 74.07s,
+translations 0.15s, original Claude 1.91s, Pi 3.41s, Codex 9.32s and DSH 182.18s.
+Public tests recorded 189 passes and 33 original-installation opt-in skips;
+the mandatory four original-Harness stages all actually executed and passed.
+UI recorded 108 passes with zero skips. Each original invocation checked the
+public Save/Edit artifact, trailing instruction and ordinary-chat control. DSH
+covered standard, ptc, minimal and cordis; minimal's missing native skill
+invocation remains unsupported rather than being added by magpie.
+
+The final 1,140 production-source fingerprints had zero mismatches, as did the
+15 selected original program/configuration files (Claude/Pi/Codex/DSH:
+3/3/4/5); this is not a whole-installation audit. The tested binary SHA256 is
+`0B526F9EBDE259EF8D5041DAAF8AEA336A0E7EB228C0D5C4BB339097ADD45900`.
+`final-proof.json`, `stages.json` and `source-snapshot.json` in the final-move
+directory retain the commands, outputs and hashes. No acceptance process was
+left running. Native acceptance was Windows-only; Linux evidence is static and
+cross-build only. No full-repository regression was run.
+
 ## Reproduce opt-in native checks
 
 Use the installed paths from the machine under test, without changing its files:

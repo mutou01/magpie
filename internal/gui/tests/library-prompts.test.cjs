@@ -63,7 +63,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       if (lang === "en") assert((await page.locator(".lib-prompts").textContent()).includes("Use the native invocation shown for each harness"), "intro must not promise /name for Codex CLI");
       const finder = page.locator(".lib-prompts .lib-find");
       const refreshList = async () => {
-        const old = await page.locator('.lib-prompts .lib-cardhead button:not([role="switch"])').first().elementHandle();
+        const old = await page.locator('.lib-prompts .lib-prompt-refresh').elementHandle();
         await old.press("Space");
         await page.waitForFunction(e => !e.isConnected, old);
       };
@@ -215,17 +215,42 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await page.screenshot({ path: path.join(process.env.ARTIFACT_DIR, `prompt-attention-${engine}-${width}.png`), fullPage: true });
         }
       }
+      await page.evaluate(() => {
+        const e = document.querySelector("#view-library"), events = [];
+        const record = phase => {
+          const active = document.activeElement, rect = n => { const r = n?.getBoundingClientRect(); return r && { top: r.top, height: r.height }; };
+          if (events.length === 64) events.shift();
+          events.push({ phase, scrollTop: e.scrollTop, clientHeight: e.clientHeight, scrollHeight: e.scrollHeight, viewport: { width: innerWidth, height: innerHeight }, active: { tag: active?.tagName, agent: active?.dataset.agent, all: active?.hasAttribute("data-all"), lib: active?.dataset.lib }, card: rect(e.querySelector(".lib-prompts")), head: rect(e.querySelector(".lib-prompts .lib-cardhead")), row: rect(e.querySelector(".lib-prompt-row")) });
+        };
+        const listener = event => record(event.type), types = ["resize", "scroll", "focusin", "keydown", "keyup"];
+        for (const type of types) window.addEventListener(type, listener, true);
+        let frame, remaining = 16;
+        const sample = () => { record("frame"); if (--remaining) frame = requestAnimationFrame(sample); };
+        frame = requestAnimationFrame(sample);
+        window.fixtureScrollFacts = { events, record, stop: () => { cancelAnimationFrame(frame); for (const type of types) window.removeEventListener(type, listener, true); } };
+        record("before viewport 560x860");
+      });
       await page.setViewportSize({ width: 560, height: 860 });
       const finishToggle = () => page.waitForFunction(() => !document.querySelector('.lib-prompt-row .lib-agents[aria-busy="true"]'));
       await all.focus();
-      const scrollBefore = await page.locator("#view-library").evaluate(e => e.scrollTop);
+      await page.waitForFunction(() => {
+        const view = document.querySelector("#view-library"), all = view.querySelector('.lib-prompt-row .lib-ag[data-all]');
+        const rect = all.getBoundingClientRect(), facts = window.fixtureScrollFacts;
+        const geometry = [innerWidth, innerHeight, view.scrollTop, view.clientHeight, view.scrollHeight, rect.top, rect.height].join();
+        facts.stableFrames = facts.geometry === geometry ? (facts.stableFrames || 0) + 1 : 0;
+        facts.geometry = geometry;
+        return innerWidth === 560 && innerHeight === 860 && document.activeElement === all && facts.stableFrames >= 2;
+      }, null, { polling: "raf" });
+      const scrollBefore = await page.locator("#view-library").evaluate(e => { window.fixtureScrollFacts.record("baseline"); return e.scrollTop; });
       await all.press("Space");
       await finishToggle();
       assert.deepEqual(sent.filter(s => s.p.endsWith("/agents")).at(-1).body.agents.sort(), ["claude", "codex", "pi"]);
       assert.equal(await all.getAttribute("aria-pressed"), "true");
       assert(!(await page.locator("#status").textContent()).includes("/reload"), "reload hints only describe successfully deployed targets");
       assert(await all.evaluate(e => e === document.activeElement), "in-place updates preserve keyboard focus");
-      assert.equal(await page.locator("#view-library").evaluate(e => e.scrollTop), scrollBefore, "target toggles preserve page position");
+      const scrollFacts = await page.evaluate(() => { const facts = window.fixtureScrollFacts; facts.record("write finished"); facts.stop(); delete window.fixtureScrollFacts; return facts.events; });
+      if (process.env.PROMPT_SCROLL_DIAGNOSTICS) console.error(JSON.stringify({ engine, lang, scrollFacts }));
+      assert.equal(await page.locator("#view-library").evaluate(e => e.scrollTop), scrollBefore, `target toggles preserve page position: ${JSON.stringify(scrollFacts)}`);
       if (process.env.ARTIFACT_DIR && lang === "zh") {
         for (const color of ["light", "dark"]) {
           await page.evaluate(color => { document.documentElement.dataset.theme = color; }, color);

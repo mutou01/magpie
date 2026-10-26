@@ -94,7 +94,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         { p: "/api/library/prompts/enabled", body: { enabled: false } },
       ], "only explicit global intents reach the enable endpoint; no separate check or target mutation is needed");
       assert.equal(await page.locator('.lib-prompt-row .lib-ag[data-agent="claude"]').getAttribute("aria-pressed"), "true", "the global off state visibly retains the saved Harness selection");
-      assert(await page.locator('.lib-prompts .lib-cardhead button:not([role="switch"])').first().isDisabled(), "global off prevents refresh from starting native Harness checks");
+      assert(await page.locator('.lib-prompts .lib-prompt-refresh').first().isDisabled(), "global off prevents refresh from starting native Harness checks");
       await page.locator(".lib-prompt-row").press("Enter");
       assert.equal(await page.locator('[data-prompt="text"]').inputValue(), "检查边界条件。", "switching off keeps the library body editable");
       assert(await page.locator('.lib-prompt-target[data-agent="claude"] input').isChecked(), "switching off keeps the saved Harness selection");
@@ -127,7 +127,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       ], "newly selecting a list target checks only that Harness before deployment");
       overviewHarnesses = true;
       const beforeRefresh = traffic.length;
-      const oldRefresh = await page.locator('.lib-prompts .lib-cardhead button:not([role="switch"])').first().elementHandle();
+      const oldRefresh = await page.locator('.lib-prompts .lib-prompt-refresh').first().elementHandle();
       await oldRefresh.press("Space");
       await page.waitForFunction(e => !e.isConnected, oldRefresh);
       assert.deepEqual(traffic.slice(beforeRefresh), [
@@ -137,7 +137,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const checkedTimes = await page.evaluate(({ timestamp, lang }) => [...new Set([new Date(timestamp).toLocaleString(), new Date(timestamp).toLocaleString(lang)])], { timestamp: 1792886400000, lang });
       const overview = page.locator(".lib-prompt-harness-check");
       assert.equal(await overview.count(), 4, "the overview contains one health icon for each installed supported Harness");
-      const notEnabled = { en: "Not enabled", zh: "未启用", "zh-TW": "未啟用", ja: "無効", de: "Nicht aktiviert" }[lang];
+
       const passedLabel = { en: "Availability check passed", zh: "可用性检查通过", "zh-TW": "可用性檢查通過", ja: "利用可否の確認に成功", de: "Verfügbarkeitsprüfung bestanden" }[lang];
       for (const [index, agent] of ["claude", "codex", "pi", "dsh"].entries()) {
         const icon = overview.nth(index);
@@ -149,7 +149,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert(tooltip.includes("fixture native check passed"), `${agent}: tooltip preserves the check reason`);
         assert(tooltip.includes(`fixture/${agent}/config`), `${agent}: tooltip identifies the check source`);
         assert(checkedTimes.some(time => tooltip.includes(time)), `${agent}: tooltip includes the actual check time`);
-        assert(!tooltip.includes(notEnabled), `${agent}: passed global checks never claim the Harness is not enabled`);
+        assert.equal(await icon.evaluate(e => e.classList.contains("on")), agent === "claude", `${agent}: successful checks do not light Harnesses with no selected deployment`);
+        assert(tooltip.includes(`${agent === "claude" ? 1 : 0}/1`), `${agent}: overview reports selected deployed templates independently of check success`);
       }
       for (const width of [560, 420]) {
         await page.setViewportSize({ width, height: 860 });
@@ -223,7 +224,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       }
       try {
         const beforePendingRefresh = sent.filter(s => s.p.endsWith("/check") && s.body.force).length;
-        await page.locator('.lib-prompts .lib-cardhead button:not([role="switch"])').first().dispatchEvent("click");
+        await page.locator('.lib-prompts .lib-prompt-refresh').first().dispatchEvent("click");
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
         assert.equal(sent.filter(s => s.p.endsWith("/check") && s.body.force).length, beforePendingRefresh, "a queued Refresh click cannot start all-Harness checks during a target write");
         await chip.press("Space");

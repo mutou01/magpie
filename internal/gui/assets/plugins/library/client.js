@@ -508,6 +508,9 @@ magpie.plugin("library", (ctx) => {
       return true;
     } catch (e) {
       status(path.startsWith("prompts/") ? promptError(e.message) : e.message, "err", 6000);
+      if (path === "prompts/harness") {
+        try { lib.prompts = await api("library/prompts"); taken++; ok = true; } catch { /* keep the last confirmed view */ }
+      }
       return false;
     } finally {
       changing = false;
@@ -1229,6 +1232,7 @@ magpie.plugin("library", (ctx) => {
       b.disabled = changing || promptWriting.size > 0;
       b.title = promptWriting.size ? t("Wait for template target updates to finish before deleting") : t("Remove");
     }
+    paintPromptHarnesses(root);
   }
   function promptError(message) {
     const duplicate = /^the library already has a prompt called (.+)$/.exec(message);
@@ -1241,6 +1245,47 @@ magpie.plugin("library", (ctx) => {
   const promptDeployed = s => s?.deployed ?? s?.status === "enabled";
   const promptStale = s => s?.status === "unverified" && ["Check native command availability again", "Check Pi command availability again"].includes(s.reason);
   const promptAttention = s => s?.status === "disabled" ? lib.prompts?.enabled !== false : !["enabled", "available"].includes(s?.status) && !(promptDeployed(s) && promptStale(s));
+
+  function promptHarnessCount(id) {
+    const items = lib.prompts?.items || [];
+    return items.filter(p => !p.error && p.agents?.includes(id) && promptDeployed(p.states?.find(s => s.agent === id))).length;
+  }
+
+  function paintPromptHarnesses(root = page) {
+    if (!root) return;
+    const enabled = lib?.prompts?.enabled ?? (lib?.prompts?.items || []).length > 0;
+    const busy = changing || promptWriting.size > 0;
+    for (const icon of root.querySelectorAll(".lib-prompt-harness-check")) {
+      const id = icon.dataset.agent, a = lib.prompts.targets.find(a => a.id === id);
+      const s = lib.prompts.checks?.find(s => s.agent === id);
+      const count = enabled ? promptHarnessCount(id) : 0, total = lib.prompts.items.length;
+      const passed = ["available", "enabled"].includes(s?.status);
+      icon.classList.toggle("on", count > 0);
+      icon.classList.toggle("warn", !!s && !["available", "enabled", "disabled"].includes(s.status) && !promptStale(s));
+      icon.disabled = !enabled || !total || busy;
+      icon.setAttribute("aria-pressed", String(count > 0));
+      icon.setAttribute("aria-busy", String(busy));
+      icon.title = [a.name, t("Enabled {n}/{total} templates", { n: count, total }),
+        !enabled ? t("Prompt templates are turned off") : t(total && count === total ? "Disable all current templates" : "Enable all current templates"),
+        passed ? t("Availability check passed") : s ? promptLabel(s) : t("Awaiting verification"),
+        s?.reason && t(s.reason), s?.source, promptCheckTime(s)].filter(Boolean).join(" · ");
+      icon.setAttribute("aria-label", icon.title);
+    }
+    for (const b of root.querySelectorAll('.lib-prompts .lib-cardhead > [role="switch"]')) b.disabled = busy;
+    for (const b of root.querySelectorAll(".lib-prompt-refresh")) b.disabled = !enabled || busy;
+  }
+
+  async function setPromptHarness(id) {
+    if (changing || promptWriting.size || lib.prompts?.enabled === false || !lib.prompts?.items.length) return;
+    const enabled = promptHarnessCount(id) !== lib.prompts.items.length;
+    if (await change("prompts/harness", { target: id, enabled })) {
+      const problems = lib.result?.problems || [];
+      if (problems.length) status(problems.map(p => `${p.what.replace(/^prompt:/, "")}: ${t(p.error)}`).join(" · "), "warn", 12000);
+    }
+    if (!document.activeElement || document.activeElement === document.body || document.activeElement === page) {
+      page.querySelector(`.lib-prompt-harness-check[data-agent="${CSS.escape(id)}"]`)?.focus({ preventScroll: true });
+    }
+  }
 
   function promptChips(p) {
     const selected = p.agents || [];
@@ -1341,6 +1386,7 @@ magpie.plugin("library", (ctx) => {
         sent = sent.filter(id => w.want.includes(id));
         answer = await api("library/prompts/agents", { id: p.id, agents: sent });
         lib.prompts = answer.prompts; taken++;
+        paintPromptHarnesses();
         const fresh = lib.prompts.items.find(x => x.id === p.id);
         if (fresh) paintPrompt(fresh);
       } while ([...sent].sort().join() !== [...w.want].sort().join());
@@ -1365,7 +1411,7 @@ magpie.plugin("library", (ctx) => {
   function renderPrompts(body) {
     const card = el("div", "list lib-list lib-prompts");
     const head = el("div", "lib-cardhead");
-    const refresh = button(t("Refresh"), "action", async () => {
+    const refresh = button(t("Refresh"), "action lib-prompt-refresh", async () => {
       if (changing || promptWriting.size || lib.prompts?.enabled === false) return;
       refresh.disabled = true;
       const at = taken;
@@ -1382,24 +1428,20 @@ magpie.plugin("library", (ctx) => {
       if (!promptWriting.size) change("prompts/enabled", { enabled: on });
     });
     sw.disabled = changing || promptWriting.size > 0;
-    head.append(glyph(GLYPH.doc), el("b", "", t("Prompt templates")), sw, el("span", "grow"), refresh, button("+ " + t("New template"), "action lib-prompt-add", () => editPrompt()));
-    card.append(head, el("p", "lib-aside", t("Use the native invocation shown for each harness to apply a template with your request.")));
     const checks = el("div", "lib-agents lib-prompt-checks");
-    for (const s of lib.prompts?.checks || []) {
-      const a = lib.prompts.targets.find(a => a.id === s.agent);
-      if (!a?.detected) continue;
-      const passed = ["available", "enabled"].includes(s.status);
-      const label = passed ? t("Availability check passed") : promptLabel(s);
-      const icon = button("", "lib-ag lib-prompt-harness-check" + (passed ? " on" : s.status === "disabled" ? "" : " warn"), () => status(icon.title));
+    for (const a of lib.prompts?.targets || []) {
+      if (!a.detected) continue;
+      const icon = button("", "lib-ag lib-prompt-harness-check", () => setPromptHarness(a.id));
       icon.append(agentIcon(a.icon));
       icon.dataset.agent = a.id;
-      icon.title = [a.name, label, s.reason && t(s.reason), s.source, promptCheckTime(s)].filter(Boolean).join(" · ");
-      icon.setAttribute("aria-label", icon.title);
+      icon.dataset.lib = "prompt-harness-" + a.id;
       checks.append(icon);
     }
-    card.append(checks);
+    head.append(glyph(GLYPH.doc), el("b", "", t("Prompt templates")), sw, checks, el("span", "grow"), refresh, button("+ " + t("New template"), "action lib-prompt-add", () => editPrompt()));
+    card.append(head, el("p", "lib-aside", t("Use the native invocation shown for each harness to apply a template with your request.")));
     const search = input(promptSearch, t("Search templates"));
     search.className = "lib-prompt-search";
+    search.dataset.lib = "prompt-search";
     search.setAttribute("aria-label", t("Search templates"));
     const finder = el("div", "list lib-card lib-prompt-finder");
     const line = el("div", "lib-find");
@@ -1429,7 +1471,7 @@ magpie.plugin("library", (ctx) => {
         paintPrompt(p, row);
       }
       if (!list.childElementCount) list.append(el("div", "lib-none", t(promptSearch ? "No matching templates" : "No prompt templates yet")));
-      promptDeleteButtons(list);
+      promptDeleteButtons(card);
     };
     search.oninput = () => { promptSearch = search.value; draw(); };
     card.append(finder, list); body.append(card); draw();

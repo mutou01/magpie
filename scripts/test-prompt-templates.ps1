@@ -53,7 +53,7 @@ try {
     foreach ($sentinel in @('TestPromptTemplateDeploysAndDoesNotBecomeInstructions','TestPromptTemplateNormalSyncAndMissingBody','TestPromptTemplatePiRuntimeChecksCommandsAndReusesResults','TestPromptTemplateCodexNativeIncompleteSourcesAndInvalidation','TestPromptTemplateDSHNativeNameAndExplicitOnlyPolicy','TestPromptTemplateAPISavesAndReads','TestPromptTemplateDeployedFactSurvivesExpiredNativeEvidence','TestPromptTemplateSaveDoesNotRescanAllSourcesForEveryTemplate')) {
         if (-not ($publicEvents | Where-Object { $_.Test -eq $sentinel -and $_.Action -eq 'pass' })) { throw ('Required public regression did not execute and pass: ' + $sentinel) }
     }
-    $null = Invoke-Stage 'browser-two-engines-five-languages' $NodeBin @('--test','internal/gui/tests/library-prompts.test.cjs','internal/gui/tests/library-prompt-remove.test.cjs','internal/gui/tests/library-prompt-enabled.test.cjs')
+    $null = Invoke-Stage 'browser-two-engines-five-languages' $NodeBin @('--test','internal/gui/tests/library-prompts.test.cjs','internal/gui/tests/library-prompt-remove.test.cjs','internal/gui/tests/library-prompt-enabled.test.cjs','internal/gui/tests/library-prompt-harness.test.cjs')
     $null = Invoke-Stage 'prompt-i18n' $NodeBin @('--test','--test-name-pattern','native prompt capability diagnostics','internal/gui/tests/i18n-keys.test.cjs')
     $null = Invoke-Stage 'original-claude' $NodeBin @('internal/library/testdata/verify-claude-prompts.cjs',$ClaudeBin,$MagpieBin)
     $null = Invoke-Stage 'original-pi' $NodeBin @('internal/library/testdata/verify-pi-prompts.cjs',$PiCli,$MagpieBin)

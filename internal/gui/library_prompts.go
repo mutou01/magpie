@@ -16,7 +16,7 @@ func promptRoutes(mux *http.ServeMux) {
 		}
 		writeJSON(w, v)
 	})
-	for _, action := range []string{"save", "check", "remove", "agents", "enabled"} {
+	for _, action := range []string{"save", "check", "remove", "agents", "enabled", "harness"} {
 		mux.HandleFunc("POST /api/library/prompts/"+action, func(w http.ResponseWriter, r *http.Request) {
 			var c struct {
 				library.PromptChange
@@ -39,12 +39,16 @@ func promptRoutes(mux *http.ServeMux) {
 				writeJSON(w, v)
 				return
 			}
-			if action == "enabled" {
+			if action == "enabled" || action == "harness" {
 				if c.Enabled == nil {
 					http.Error(w, "enabled must be a boolean", http.StatusBadRequest)
 					return
 				}
-				res, err = library.SetPromptsEnabledContext(r.Context(), *c.Enabled)
+				if action == "harness" {
+					res, err = library.SetPromptHarnessContext(r.Context(), c.Target, *c.Enabled)
+				} else {
+					res, err = library.SetPromptsEnabledContext(r.Context(), *c.Enabled)
+				}
 			} else if action == "save" {
 				res, err = library.SavePrompt(c.PromptChange)
 			} else if action == "agents" {
