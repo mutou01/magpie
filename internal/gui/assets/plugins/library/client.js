@@ -508,6 +508,9 @@ magpie.plugin("library", (ctx) => {
       return true;
     } catch (e) {
       status(path.startsWith("prompts/") ? promptError(e.message) : e.message, "err", 6000);
+      if (path === "prompts/harness") {
+        try { lib.prompts = await api("library/prompts"); taken++; ok = true; } catch { /* keep the last confirmed view */ }
+      }
       return false;
     } finally {
       changing = false;
@@ -1229,6 +1232,7 @@ magpie.plugin("library", (ctx) => {
       b.disabled = changing || promptWriting.size > 0;
       b.title = promptWriting.size ? t("Wait for template target updates to finish before deleting") : t("Remove");
     }
+    paintPromptHarnesses(root);
   }
   function promptError(message) {
     const duplicate = /^the library already has a prompt called (.+)$/.exec(message);
@@ -1236,24 +1240,86 @@ magpie.plugin("library", (ctx) => {
     if (message.startsWith("no prompt called ")) return t("This template no longer exists");
     return t(message);
   }
-  const promptLabel = (s) => t(({ enabled: "Enabled", available: "Not enabled", conflict: "Name conflict", edited: "Edited outside the library", unverified: "Awaiting verification", unsupported: "Unavailable" })[s.status] || "Awaiting verification");
+  const promptLabel = (s) => t(({ enabled: "Enabled", disabled: "Off", available: "Not enabled", conflict: "Name conflict", edited: "Edited outside the library", unverified: "Awaiting verification", unsupported: "Unavailable" })[s.status] || "Awaiting verification");
+  const promptCheckTime = s => s?.checkedAt ? t("Last checked {time}", { time: new Date(s.checkedAt).toLocaleString() }) : "";
+  const promptDeployed = s => s?.deployed ?? s?.status === "enabled";
+  const promptStale = s => s?.status === "unverified" && ["Check native command availability again", "Check Pi command availability again"].includes(s.reason);
+  const promptAttention = s => s?.status === "disabled" ? lib.prompts?.enabled !== false : !["enabled", "available"].includes(s?.status) && !(promptDeployed(s) && promptStale(s));
+
+  function promptHarnessCount(id) {
+    const items = lib.prompts?.items || [];
+    return items.filter(p => !p.error && p.agents?.includes(id) && promptDeployed(p.states?.find(s => s.agent === id))).length;
+  }
+
+  function paintPromptHarnesses(root = page) {
+    if (!root) return;
+    const enabled = lib?.prompts?.enabled ?? (lib?.prompts?.items || []).length > 0;
+    const busy = changing || promptWriting.size > 0;
+    for (const icon of root.querySelectorAll(".lib-prompt-harness-check")) {
+      const id = icon.dataset.agent, a = lib.prompts.targets.find(a => a.id === id);
+      const s = lib.prompts.checks?.find(s => s.agent === id);
+      const count = enabled ? promptHarnessCount(id) : 0, total = lib.prompts.items.length;
+      const passed = ["available", "enabled"].includes(s?.status);
+      icon.classList.toggle("on", count > 0);
+      icon.classList.toggle("warn", !!s && !["available", "enabled", "disabled"].includes(s.status) && !promptStale(s));
+      icon.disabled = !enabled || !total || busy;
+      icon.setAttribute("aria-pressed", String(count > 0));
+      icon.setAttribute("aria-busy", String(busy));
+      icon.title = [a.name, t("Enabled {n}/{total} templates", { n: count, total }),
+        !enabled ? t("Prompt templates are turned off") : t(total && count === total ? "Disable all current templates" : "Enable all current templates"),
+        passed ? t("Availability check passed") : s ? promptLabel(s) : t("Awaiting verification"),
+        s?.reason && t(s.reason), s?.source, promptCheckTime(s)].filter(Boolean).join(" · ");
+      icon.setAttribute("aria-label", icon.title);
+    }
+    for (const b of root.querySelectorAll('.lib-prompts .lib-cardhead > [role="switch"]')) b.disabled = busy;
+    for (const b of root.querySelectorAll(".lib-prompt-refresh")) b.disabled = !enabled || busy;
+  }
+
+  async function setPromptHarness(id) {
+    if (changing || promptWriting.size || lib.prompts?.enabled === false || !lib.prompts?.items.length) return;
+    const enabled = promptHarnessCount(id) !== lib.prompts.items.length;
+    const ids = new Set(lib.prompts.items.map(p => p.id));
+    const name = lib.prompts.targets.find(a => a.id === id)?.name || nameOf(id);
+    if (await change("prompts/harness", { target: id, enabled })) {
+      const problems = lib.result?.problems || [];
+      const items = lib.prompts.items.filter(p => ids.has(p.id));
+      const n = items.filter(p => {
+        const state = p.states?.find(s => s.agent === id);
+        return !!state && (enabled
+          ? !p.error && p.agents?.includes(id) && promptDeployed(state)
+          : !p.agents?.includes(id) && !promptDeployed(state));
+      }).length;
+      if (!problems.length && n === ids.size) {
+        status(t(enabled ? "{name} started" : "{name} stopped", { name }), "ok");
+      } else {
+        const summary = `${name} · ${t(enabled ? "Enabled {n}/{total} templates" : "Disabled {n}/{total} templates", { n, total: ids.size })}`;
+        const errors = problems.map(p => `${nameOf(p.agent)} · ${p.what.replace(/^prompt:/, "")}: ${t(p.error)}`);
+        if (!errors.length) errors.push(t("Some templates did not reach the requested state"));
+        status([summary, ...errors].join(" · "), "warn", 12000);
+      }
+    }
+    if (!document.activeElement || document.activeElement === document.body || document.activeElement === page) {
+      page.querySelector(`.lib-prompt-harness-check[data-agent="${CSS.escape(id)}"]`)?.focus({ preventScroll: true });
+    }
+  }
 
   function promptChips(p) {
     const selected = p.agents || [];
     const targets = (lib.prompts?.targets || []).filter(a => a.detected || selected.includes(a.id));
     const state = a => p.states?.find(s => s.agent === a.id);
-    const can = a => !p.error && a.detected && ["available", "enabled"].includes(state(a)?.status);
+    const usable = a => !p.error && a.detected && ["available", "enabled"].includes(state(a)?.status);
+    const can = a => !p.error && a.detected && ["available", "enabled", "unverified"].includes(state(a)?.status);
     const reason = a => {
       const s = state(a);
       return [p.error, s?.reason ? t(s.reason) : s ? promptLabel(s) : t("Awaiting verification"), s?.source, s?.status === "unverified" && t("Open the template editor to check availability again")].filter(Boolean).join(" · ");
     };
-    const problems = Object.fromEntries(targets.filter(a => !can(a)).map(a => [a.id, reason(a)]));
-    const lit = (p.states || []).filter(s => s.status === "enabled").map(s => s.agent);
-    const change = (_, c) => setPromptAgents(p, c, targets.filter(can).map(a => a.id));
+    const problems = Object.fromEntries(targets.filter(a => !usable(a) && !(promptDeployed(state(a)) && promptStale(state(a)))).map(a => [a.id, reason(a)]));
+    const lit = lib.prompts?.enabled === false ? selected : p.error ? [] : selected.filter(id => promptDeployed(p.states?.find(s => s.agent === id)));
+    const change = (_, c) => setPromptAgents(p, c, targets.filter(usable).map(a => a.id));
     const box = agentChips(targets, lit, change, { problems, blocked: a => !can(a) && !selected.includes(a.id) ? reason(a) : "" });
     // All affects only eligible targets. A retained but unverified selection
     // remains individually removable, without becoming an eligible bulk target.
-    const eligible = targets.filter(can).map(a => a.id);
+    const eligible = targets.filter(usable).map(a => a.id);
     if (eligible.length >= 2) {
       const full = eligible.every(id => lit.includes(id));
       const all = button(t("All"), "lib-ag all" + (full ? " on" : ""), (_, c) => change(null, c));
@@ -1265,10 +1331,12 @@ magpie.plugin("library", (ctx) => {
     for (const a of targets) {
       const c = [...box.children].find(c => c.dataset.agent === a.id);
       c.setAttribute("aria-label", a.name);
+      const details = reason(a);
+      if (details && !c.title.includes(details)) c.title += "\n" + details;
       if (!can(a) && selected.includes(a.id)) c.title += "\n" + t("{agent} has it — click to take it away", { agent: a.name });
-      if (a.verification === "pending") c.title += "\n" + t("Native behavior awaits verification on this installation");
+      if (promptCheckTime(state(a))) c.title += "\n" + promptCheckTime(state(a));
       if (a.invocation) c.title += "\n" + a.invocation;
-      if (a.reload && state(a)?.status === "enabled") c.title += "\n" + t(a.reload);
+      if (a.reload && promptDeployed(state(a))) c.title += "\n" + t(a.reload);
     }
     return box;
   }
@@ -1291,7 +1359,7 @@ magpie.plugin("library", (ctx) => {
     for (const c of box.children) c.setAttribute("aria-busy", String(busy));
     const tags = row.querySelector(".lib-tags");
     tags.replaceChildren();
-    if (p.error || (p.states || []).some(s => (p.agents || []).includes(s.agent) && !["enabled", "available"].includes(s.status))) tags.append(tag(t("Needs attention"), "warn"));
+    if (p.error || (p.states || []).some(s => (p.agents || []).includes(s.agent) && promptAttention(s))) tags.append(tag(t("Needs attention"), "warn"));
   }
 
   async function setPromptAgents(p, c, eligible) {
@@ -1310,16 +1378,35 @@ magpie.plugin("library", (ctx) => {
     paintPrompt(p);
     if (pending) return;
     let answer;
+    const checkProblems = [];
     try {
       let sent;
       do {
         sent = [...w.want];
+        const current = lib.prompts.items.find(x => x.id === p.id) || p;
+        for (const id of sent.filter(id => !current.agents.includes(id))) {
+          try {
+            const states = await api("library/prompts/check", { id: current.id, name: current.name, text: current.text, target: id, force: false, passive: false });
+            current.states = [...(current.states || []).filter(s => s.agent !== id), ...states];
+            if (!states.some(s => s.agent === id && ["available", "enabled"].includes(s.status))) {
+              w.want = w.want.filter(a => a !== id);
+              const s = states.find(s => s.agent === id);
+              checkProblems.push({ error: [s?.reason && t(s.reason), s?.source].filter(Boolean).join(" · ") });
+            }
+          } catch (e) {
+            w.want = w.want.filter(a => a !== id);
+            checkProblems.push({ error: e.message });
+          }
+        }
+        // A cancellation made during verification wins over the earlier click.
+        sent = sent.filter(id => w.want.includes(id));
         answer = await api("library/prompts/agents", { id: p.id, agents: sent });
         lib.prompts = answer.prompts; taken++;
+        paintPromptHarnesses();
         const fresh = lib.prompts.items.find(x => x.id === p.id);
         if (fresh) paintPrompt(fresh);
       } while ([...sent].sort().join() !== [...w.want].sort().join());
-      const problems = answer.result?.problems || [];
+      const problems = [...checkProblems, ...(answer.result?.problems || [])];
       if (problems.length) status(problems.map(x => x.error).join(" · "), "warn", 8000);
       else {
         const enabled = lib.prompts.items.find(x => x.id === p.id)?.states.filter(s => s.status === "enabled").map(s => s.agent) || [];
@@ -1340,15 +1427,37 @@ magpie.plugin("library", (ctx) => {
   function renderPrompts(body) {
     const card = el("div", "list lib-list lib-prompts");
     const head = el("div", "lib-cardhead");
-    const refresh = button(t("Refresh"), "action", async () => {
+    const refresh = button(t("Recheck availability"), "action lib-prompt-refresh", async () => {
+      if (changing || promptWriting.size || lib.prompts?.enabled === false) return;
       refresh.disabled = true;
       const at = taken;
-      try { const v = await api("library/prompts"); if (taken !== at) return; lib.prompts = v; render(); } catch (e) { status(e.message, "err"); } finally { refresh.disabled = false; }
+      try {
+        await api("library/prompts/check", { force: true });
+        const v = await api("library/prompts");
+        if (taken !== at) return;
+        lib.prompts = v; render();
+      } catch (e) { status(e.message, "err"); } finally { refresh.disabled = false; }
     });
-    head.append(glyph(GLYPH.doc), el("b", "", t("Prompt templates")), el("span", "grow"), refresh, button("+ " + t("New template"), "action lib-prompt-add", () => editPrompt()));
+    const enabled = lib.prompts?.enabled ?? (lib.prompts?.items || []).length > 0;
+    refresh.disabled = !enabled || changing || promptWriting.size > 0;
+    const sw = toggle(enabled, t("Prompt templates"), on => {
+      if (!promptWriting.size) change("prompts/enabled", { enabled: on });
+    });
+    sw.disabled = changing || promptWriting.size > 0;
+    const checks = el("div", "lib-agents lib-prompt-checks");
+    for (const a of lib.prompts?.targets || []) {
+      if (!a.detected) continue;
+      const icon = button("", "lib-ag lib-prompt-harness-check", () => setPromptHarness(a.id));
+      icon.append(agentIcon(a.icon));
+      icon.dataset.agent = a.id;
+      icon.dataset.lib = "prompt-harness-" + a.id;
+      checks.append(icon);
+    }
+    head.append(glyph(GLYPH.doc), el("b", "", t("Prompt templates")), sw, checks, el("span", "grow"), refresh, button("+ " + t("New template"), "action lib-prompt-add", () => editPrompt()));
     card.append(head, el("p", "lib-aside", t("Use the native invocation shown for each harness to apply a template with your request.")));
     const search = input(promptSearch, t("Search templates"));
     search.className = "lib-prompt-search";
+    search.dataset.lib = "prompt-search";
     search.setAttribute("aria-label", t("Search templates"));
     const finder = el("div", "list lib-card lib-prompt-finder");
     const line = el("div", "lib-find");
@@ -1365,21 +1474,20 @@ magpie.plugin("library", (ctx) => {
         const who = el("div", "who");
         who.append(el("div", "name", "/" + p.name), el("div", "sub", p.error || p.text.split("\n").find(l => l.trim()) || t("Empty")));
         const tags = el("div", "lib-tags");
-        who.append(tags);
         const acts = removeAct(() => confirmRemovePrompt(p));
         const remove = acts[0]?.querySelector("button");
         if (remove) {
           remove.classList.add("lib-prompt-delete");
           remove.setAttribute("aria-label", t("Remove {name}?", { name: "/" + p.name }));
         }
-        row.append(glyph(GLYPH.doc), who, ...acts);
+        row.append(glyph(GLYPH.doc), who, tags, ...acts);
         row.onclick = () => editPrompt(lib.prompts.items.find(x => x.id === p.id) || p);
         row.onkeydown = e => { if (e.target === row && !e.isComposing && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); row.click(); } };
         list.append(row);
         paintPrompt(p, row);
       }
       if (!list.childElementCount) list.append(el("div", "lib-none", t(promptSearch ? "No matching templates" : "No prompt templates yet")));
-      promptDeleteButtons(list);
+      promptDeleteButtons(card);
     };
     search.oninput = () => { promptSearch = search.value; draw(); };
     card.append(finder, list); body.append(card); draw();
@@ -1420,17 +1528,17 @@ magpie.plugin("library", (ctx) => {
 
   function editPrompt(p) {
     const targets = lib.prompts?.targets || [];
-    const d = { id: p?.id || "", name: p?.name || "", text: p?.text || "", agents: p ? [...p.agents] : targets.filter(a => a.detected).map(a => a.id) };
+    const d = { id: p?.id || "", name: p?.name || "", text: p?.text || "", agents: p ? [...p.agents] : [] };
     const original = JSON.stringify(d);
     const ed = el("div", "editor lib-editor lib-prompt-editor");
     const head = el("div", "ehead");
     head.append(glyph(GLYPH.doc), el("b", "", t(p ? "Edit template" : "New template")));
     ed.append(head);
     const error = el("div", "editor-error lib-prompt-error");
-    const name = field2(d.name, t("e.g. review or 代码审查"), v => { d.name = v; checked = ""; });
+    const name = field2(d.name, t("e.g. review-code"), v => { d.name = v; checked = ""; });
     name.dataset.prompt = "name";
     name.setAttribute("aria-label", t("Name"));
-    ed.append(...field(t("Name"), name, t("Chinese or English letters, digits, - and _; up to 60 characters")));
+    ed.append(...field(t("Name"), name, t("Lowercase letters and digits separated by single hyphens; up to 60 characters")));
     const text = el("textarea", "lib-text small lib-prompt-text");
     text.dataset.prompt = "text"; text.value = d.text; text.spellcheck = false;
     text.setAttribute("aria-label", t("Template text"));
@@ -1442,27 +1550,51 @@ magpie.plugin("library", (ctx) => {
     ed.append(...field(t("Template text"), text, t("The harness adds your request using its native command behavior.")));
     const checks = el("div", "lib-prompt-targets");
     let states = p?.states || [], checked = "", working = false;
+    const checkingTargets = new Set();
+    const checkVersions = new Map();
+    let checkVersion = 0;
     function drawTargets() {
       checks.replaceChildren();
       for (const a of targets) {
         if (!a.detected && !d.agents.includes(a.id)) continue;
         const s = states.find(s => s.agent === a.id);
-        const blocked = !a.detected || (s && !["available", "enabled"].includes(s.status));
+        const blocked = !a.detected || (s && ["conflict", "unsupported", "edited"].includes(s.status));
         const row = el("div", "lib-prompt-target"); row.dataset.agent = a.id;
         const label = el("label", "lib-prompt-target-label");
         const pick = el("input"); pick.type = "checkbox";
         const retained = d.agents.includes(a.id) && p?.agents.includes(a.id);
         pick.checked = d.agents.includes(a.id) && (!blocked || retained);
         pick.disabled = !!blocked && !retained;
-        pick.onchange = () => {
+        pick.onchange = async () => {
           d.agents = pick.checked ? [...new Set([...d.agents, a.id])] : d.agents.filter(id => id !== a.id);
-          pick.disabled = !!blocked && !pick.checked;
+          if (!pick.checked) { drawTargets(); return; }
+          if (checkingTargets.has(a.id)) return;
+          const key = JSON.stringify([d.name, d.text]);
+          const version = ++checkVersion;
+          checkVersions.set(a.id, version);
+          checkingTargets.add(a.id); saveButton.disabled = true;
+          error.textContent = "";
+          try {
+            const answer = await api("library/prompts/check", { id: d.id, name: d.name.trim(), text: d.text, target: a.id, force: false, passive: false });
+            if (modal?.editor !== ed || confirmationPending || JSON.stringify([d.name, d.text]) !== key || checkVersions.get(a.id) !== version) return;
+            states = [...states.filter(s => s.agent !== a.id), ...answer];
+            if (!answer.some(s => s.agent === a.id && ["available", "enabled"].includes(s.status))) d.agents = d.agents.filter(id => id !== a.id);
+            checked = "";
+          } catch (e) {
+            if (modal?.editor === ed && !confirmationPending && JSON.stringify([d.name, d.text]) === key && checkVersions.get(a.id) === version) {
+              error.textContent = promptError(e.message); d.agents = d.agents.filter(id => id !== a.id);
+            }
+          } finally {
+            checkingTargets.delete(a.id); saveButton.disabled = working || checkingTargets.size > 0;
+            if (modal?.editor === ed) drawTargets();
+          }
         };
+        pick.setAttribute("aria-busy", String(checkingTargets.has(a.id)));
         label.append(pick, el("span", "", a.name), el("span", "grow"), el("span", "note", s ? promptLabel(s) : t("Check availability")));
         row.append(label);
         if (s?.reason || s?.source) row.append(el("div", "note lib-prompt-reason", [s.reason ? t(s.reason) : "", s.source].filter(Boolean).join(" · ")));
         if (a.invocation) row.append(el("div", "note lib-prompt-invocation", a.invocation));
-        if (a.verification === "pending") row.append(el("div", "note", t("Native behavior awaits verification on this installation")));
+        if (promptCheckTime(s)) row.append(el("div", "note lib-prompt-check-time", promptCheckTime(s)));
         if (a.reload && s?.status === "enabled") row.append(el("div", "note", t(a.reload)));
         checks.append(row);
       }
@@ -1476,15 +1608,17 @@ magpie.plugin("library", (ctx) => {
     async function check(fresh = false) {
       const key = JSON.stringify([d.name, d.text]);
       if (!fresh && checked === key) return true;
-      const answer = await api("library/prompts/check", { id: d.id, name: d.name.trim(), text: d.text, passive: !fresh });
+      const version = ++checkVersion;
+      for (const a of targets) checkVersions.set(a.id, version);
+      const answer = await api("library/prompts/check", { id: d.id, name: d.name.trim(), text: d.text, force: fresh, passive: !fresh });
       if (JSON.stringify([d.name, d.text]) !== key || modal?.editor !== ed || confirmationPending) return false;
-      states = answer; checked = key;
+      states = [...states.filter(s => checkVersions.get(s.agent) !== version), ...answer.filter(s => checkVersions.get(s.agent) === version)]; checked = key;
       // A failed check must not turn an existing selection into a removal.
       d.agents = d.agents.filter(id => p?.agents.includes(id) || states.some(s => s.agent === id && ["available", "enabled"].includes(s.status)));
       drawTargets(); return true;
     }
     async function save() {
-      if (working) return;
+      if (working || checkingTargets.size) return;
       working = true; saveButton.disabled = true; cancelButton.disabled = true; error.textContent = "";
       if (modal?.editor === ed) modal.saving = true;
       try {
@@ -1500,7 +1634,7 @@ magpie.plugin("library", (ctx) => {
       checkButton.textContent = t("Checking…");
       status("");
       try { await check(true); } catch (e) { error.textContent = promptError(e.message); }
-      finally { working = false; checkButton.disabled = false; checkButton.textContent = t("Check availability"); }
+      finally { working = false; saveButton.disabled = checkingTargets.size > 0; checkButton.disabled = false; checkButton.textContent = t("Check availability"); }
     };
     const bar = el("div", "bar");
     if (p) {

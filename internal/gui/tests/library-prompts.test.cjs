@@ -23,7 +23,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const states = [{ agent: "claude", status: "available" }, { agent: "codex", status: "conflict", reason: "This name is already in use", source: "/fixture/.agents/skills/审查/SKILL.md" }, { agent: "pi", status: "unverified", reason: "Check Pi command availability again", source: "/fixture/.pi/agent" }];
       states.push({ agent: "dsh", status: "unverified", reason: "DeepSeek Harness skill source completeness could not be verified", source: "fixture/native-skill-provider" });
       const theme = ["ja", "de"].includes(lang) ? "dark" : "light";
-      const prompts = () => ({ items, targets });
+      const prompts = () => ({ enabled: true, items, targets });
       await ctx.addInitScript(() => localStorage.setItem("magpie.libTab", "instructions"));
       await page.route("**/*", async (route) => {
         const url = new URL(route.request().url()), p = url.pathname;
@@ -40,7 +40,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           if (p.endsWith("/check")) {
             checkStarted?.();
             if (body.name === "waiting-template") await new Promise(resolve => { releaseCheck = resolve; });
-            return route.fulfill({ json: states });
+            return route.fulfill({ json: body.target ? states.filter(s => s.agent === body.target) : states });
           }
           if (p.endsWith("/save") && failSave) { failSave = false; return route.fulfill({ status: 500, body: "fixture save failed" }); }
           if (p.endsWith("/save")) items = [{ ...body, id: "p1", states: states.map(s => s.agent === "claude" ? { ...s, status: "enabled" } : s) }];
@@ -63,7 +63,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       if (lang === "en") assert((await page.locator(".lib-prompts").textContent()).includes("Use the native invocation shown for each harness"), "intro must not promise /name for Codex CLI");
       const finder = page.locator(".lib-prompts .lib-find");
       const refreshList = async () => {
-        const old = await page.locator(".lib-prompts .lib-cardhead button").first().elementHandle();
+        const old = await page.locator('.lib-prompts .lib-prompt-refresh').elementHandle();
         await old.press("Space");
         await page.waitForFunction(e => !e.isConnected, old);
       };
@@ -72,6 +72,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await finder.locator("button").count(), 0, "search is immediate, without an action button");
       assert(await finder.locator(".lib-prompt-search").isVisible());
       await page.locator(".lib-prompt-add").press("Space");
+      assert.equal(await page.locator('[data-prompt="name"]').getAttribute("placeholder"), { en: "e.g. review-code", zh: "例如 review-code", "zh-TW": "例如 review-code", ja: "例：review-code", de: "z. B. review-code" }[lang]);
       const warning = await page.locator(".lib-prompt-runtime-note").textContent();
       assert(warning.includes({ en: "loads extensions", zh: "加载扩展", "zh-TW": "載入擴充功能", ja: "拡張機能", de: "Erweiterungen" }[lang]), "runtime side effects are explained in every language");
       await page.locator('[data-prompt="name"]').fill("waiting-template");
@@ -86,7 +87,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       finally { releaseCheck?.(); }
       await page.locator(".lib-prompt-error").filter({ hasText: "fixture save failed" }).waitFor();
       failSave = true; sent.length = 0;
-      await page.locator('[data-prompt="name"]').fill("审查");
+      await page.locator('[data-prompt="name"]').fill("review-code");
       await page.locator('[data-prompt="text"]').fill("检查边界条件。");
       await page.locator(".lib-prompt-check").click();
       await page.locator('.lib-prompt-target[data-agent="codex"] .lib-prompt-reason').waitFor();
@@ -98,13 +99,26 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert((await page.locator('.lib-prompt-target[data-agent="codex"]').textContent()).includes("/skills · $<name>"), "unified Codex shows the CLI entry points");
       assert(!(await page.locator('.lib-prompt-target[data-agent="codex"]').textContent()).includes("Desktop"), "Codex describes only CLI usage, without a separate Desktop note");
       assert((await page.locator('.lib-prompt-target[data-agent="dsh"]').textContent()).includes("fixture/native-skill-provider"), "DSH explains uncovered native providers");
-      assert(await page.locator('.lib-prompt-target[data-agent="dsh"] input').isDisabled(), "incomplete DSH sources cannot be enabled");
+      assert(await page.locator('.lib-prompt-target[data-agent="dsh"] input').isEnabled(), "unverified DSH sources allow an explicit retry");
       assert(!(await page.locator('.lib-prompt-target[data-agent="pi"]').textContent()).includes("/reload"), "reload is a deployment hint, not a check-error remedy");
       assert.equal(sent.at(-1).body.passive, false, "manual check explicitly permits runtime enumeration");
       const checksBefore = sent.filter(s => s.p.endsWith("/check")).length;
       await page.locator(".lib-prompt-check").click();
       await page.waitForFunction(() => !document.querySelector(".lib-prompt-check").disabled);
       assert.equal(sent.filter(s => s.p.endsWith("/check")).length, checksBefore + 1, "manual check always refreshes native commands");
+      const originalDSHState = states.at(-1);
+      for (const diagnostic of [
+        { reason: "DeepSeek Harness plugin dependency could not be loaded", source: "dsh-at-file: @deepseek-ai/dsh-settings", words: { en: "plugin dependency", zh: "插件缺少依赖", "zh-TW": "插件缺少相依", ja: "依存パッケージ", de: "Abhängigkeit" } },
+        { reason: "DeepSeek Harness environment variable is restricted to the launching process", source: "C:/fixture/.env: DSH_HOME", words: { en: "launching process", zh: "启动进程", "zh-TW": "啟動程序", ja: "起動プロセス", de: "startenden Prozess" } },
+      ]) {
+        states[states.length - 1] = { agent: "dsh", status: "unverified", ...diagnostic };
+        await page.locator(".lib-prompt-check").click();
+        const target = page.locator('.lib-prompt-target[data-agent="dsh"]');
+        await target.filter({ hasText: diagnostic.source }).waitFor();
+        assert((await target.textContent()).includes(diagnostic.words[lang]), "native failure reason is translated and retains its source");
+        assert(await target.locator("input").isEnabled(), "actionable unverified errors allow retry without claiming successful deployment");
+      }
+      states[states.length - 1] = originalDSHState;
       if (process.env.ARTIFACT_DIR && lang === "zh") {
         await fs.mkdir(process.env.ARTIFACT_DIR, { recursive: true });
         await page.evaluate(() => Promise.all(document.getAnimations().filter(a => a.effect?.getTiming().iterations !== Infinity).map(a => a.finished.catch(() => {}))));
@@ -113,6 +127,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.setViewportSize({ width: 1000, height: 900 });
       assert((await page.locator('.lib-prompt-target[data-agent="pi"]').boundingBox()).width > 350, "the runtime warning must not push target cards into the label column");
       await page.setViewportSize({ width: 560, height: 860 });
+      await page.locator('.lib-prompt-target[data-agent="claude"] input').check();
+      await page.waitForFunction(() => !document.querySelector(".lib-prompt-save").disabled);
       await page.locator(".lib-prompt-save").click();
       await page.locator(".lib-prompt-error").filter({ hasText: "fixture save failed" }).waitFor();
       assert.equal(await page.locator('[data-prompt="text"]').inputValue(), "检查边界条件。");
@@ -126,17 +142,18 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await chip("claude").getAttribute("aria-pressed"), "true");
       assert(!(await chip("codex").getAttribute("title")).includes("Desktop"), "the single Codex icon explains CLI usage only");
       assert.equal((await page.locator(".lib-prompt-row .lib-tags").textContent()).trim(), "", "native acceptance pending is not a permanent list badge");
-      assert((await chip("claude").getAttribute("title")).includes({ en: "Native behavior", zh: "原生行为", "zh-TW": "原生行為", ja: "動作は未検証", de: "Natives Verhalten" }[lang]), "native acceptance remains explained on the icon");
+      assert(!(await chip("claude").getAttribute("title")).includes("Native behavior awaits verification"), "successful targets do not retain a permanent native pending note");
       assert((await chip("pi").getAttribute("class")).includes("warn"), "unavailable targets retain their warning dot");
       assert.equal(await chip("pi").getAttribute("aria-pressed"), "false");
       assert.equal(await page.locator('.lib-prompt-row .lib-ag[data-all]').count(), 0, "All needs two eligible targets");
       const beforeBlocked = sent.length;
       await chip("pi").press("Space");
-      assert((await page.locator("#status").textContent()).includes({ en: "template editor", zh: "模板编辑框", "zh-TW": "範本編輯器", ja: "テンプレートエディター", de: "Vorlageneditor" }[lang]), "expired checks explain where to recheck");
+      await page.waitForFunction(() => !document.querySelector('.lib-prompt-row .lib-agents[aria-busy="true"]'));
+      assert.equal(sent.filter(s => s.p.endsWith("/check")).at(-1).body.target, "pi", "an unverified list target retries only its own Harness");
       await chip("codex").press("Space");
       assert((await page.locator("#status").textContent()).includes("/fixture/.agents/skills/审查/SKILL.md"));
       assert.equal(await page.locator(".lib-prompt-editor").count(), 0, "a chip's keyboard action must not open the editor");
-      assert.equal(sent.length, beforeBlocked, "a blocked target never writes or starts runtime checks");
+      assert.deepEqual(sent.slice(beforeBlocked).map(s => [s.p, s.body.target || s.body.agents]), [["/api/library/prompts/check", "pi"], ["/api/library/prompts/agents", ["claude"]]], "failed verification preserves confirmed choices while a conflicting target remains blocked");
       holdAgents = true;
       const firstToggle = page.waitForRequest(r => r.url().endsWith("/prompts/agents"));
       await chip("claude").press("Space");
@@ -149,7 +166,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.waitForFunction(() => !document.querySelector('.lib-prompt-row .lib-agents[aria-busy="true"]'));
       assert.equal(await chip("claude").getAttribute("aria-pressed"), "true", "rapid clicks settle on the final intent");
       const targetPosts = sent.filter(s => s.p.endsWith("/agents"));
-      assert.deepEqual(targetPosts.map(s => s.body), [{ id: "p1", agents: [] }, { id: "p1", agents: ["claude"] }]);
+      assert.deepEqual(targetPosts.slice(-2).map(s => s.body), [{ id: "p1", agents: [] }, { id: "p1", agents: ["claude"] }]);
       failAgents = true;
       await chip("claude").press("Space");
       await page.locator("#status").filter({ hasText: "fixture target update failed" }).waitFor();
@@ -166,16 +183,74 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await all.waitFor();
       assert.equal(await all.getAttribute("aria-pressed"), "false");
       assert.equal(await page.locator(".lib-prompt-row .lib-tags .warn").count(), 1, "selected abnormal targets retain Needs attention");
+      for (const width of [560, 1100, 420]) {
+        await page.setViewportSize({ width, height: 900 });
+        const row = page.locator(".lib-prompt-row");
+        await row.locator(".lib-prompt-delete").focus();
+        await page.waitForFunction(() => getComputedStyle(document.activeElement.parentElement).opacity === "1");
+        const layout = await row.evaluate(e => {
+          const box = el => {
+            const r = el.getBoundingClientRect();
+            return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, centerY: r.top + r.height / 2 };
+          };
+          return {
+            row: box(e), warning: box(e.querySelector(".lib-tags .warn")),
+            targets: [...e.querySelectorAll(".lib-ag[data-agent]")].map(box),
+            name: box(e.querySelector(".who")), actions: box(e.querySelector(".lib-rowacts")),
+          };
+        });
+        for (const target of layout.targets) {
+          assert(Math.abs(layout.warning.centerY - target.centerY) <= 1, `Needs attention aligns with harness icons at ${width}px (${JSON.stringify(layout)})`);
+        }
+        const overlaps = (a, b) => a.left < b.right - 1 && a.right > b.left + 1 && a.top < b.bottom - 1 && a.bottom > b.top + 1;
+        for (const other of [layout.name, layout.actions, ...layout.targets]) {
+          assert(!overlaps(layout.warning, other), `Needs attention does not overlap template text or controls at ${width}px`);
+        }
+        for (const box of [layout.warning, layout.actions, ...layout.targets]) {
+          assert(box.left >= layout.row.left - 1 && box.right <= layout.row.right + 1 && box.top >= layout.row.top - 1 && box.bottom <= layout.row.bottom + 1, `template status and controls stay inside their row at ${width}px`);
+        }
+        assert(await page.locator("#view-library").evaluate(e => e.scrollWidth <= e.clientWidth + 1), `template list has no horizontal overflow at ${width}px`);
+        if (process.env.ARTIFACT_DIR && lang === "zh") {
+          await fs.mkdir(process.env.ARTIFACT_DIR, { recursive: true });
+          await page.screenshot({ path: path.join(process.env.ARTIFACT_DIR, `prompt-attention-${engine}-${width}.png`), fullPage: true });
+        }
+      }
+      await page.evaluate(() => {
+        const e = document.querySelector("#view-library"), events = [];
+        const record = phase => {
+          const active = document.activeElement, rect = n => { const r = n?.getBoundingClientRect(); return r && { top: r.top, height: r.height }; };
+          if (events.length === 64) events.shift();
+          events.push({ phase, scrollTop: e.scrollTop, clientHeight: e.clientHeight, scrollHeight: e.scrollHeight, viewport: { width: innerWidth, height: innerHeight }, active: { tag: active?.tagName, agent: active?.dataset.agent, all: active?.hasAttribute("data-all"), lib: active?.dataset.lib }, card: rect(e.querySelector(".lib-prompts")), head: rect(e.querySelector(".lib-prompts .lib-cardhead")), row: rect(e.querySelector(".lib-prompt-row")) });
+        };
+        const listener = event => record(event.type), types = ["resize", "scroll", "focusin", "keydown", "keyup"];
+        for (const type of types) window.addEventListener(type, listener, true);
+        let frame, remaining = 16;
+        const sample = () => { record("frame"); if (--remaining) frame = requestAnimationFrame(sample); };
+        frame = requestAnimationFrame(sample);
+        window.fixtureScrollFacts = { events, record, stop: () => { cancelAnimationFrame(frame); for (const type of types) window.removeEventListener(type, listener, true); } };
+        record("before viewport 560x860");
+      });
+      await page.setViewportSize({ width: 560, height: 860 });
       const finishToggle = () => page.waitForFunction(() => !document.querySelector('.lib-prompt-row .lib-agents[aria-busy="true"]'));
       await all.focus();
-      const scrollBefore = await page.locator("#view-library").evaluate(e => e.scrollTop);
+      await page.waitForFunction(() => {
+        const view = document.querySelector("#view-library"), all = view.querySelector('.lib-prompt-row .lib-ag[data-all]');
+        const rect = all.getBoundingClientRect(), facts = window.fixtureScrollFacts;
+        const geometry = [innerWidth, innerHeight, view.scrollTop, view.clientHeight, view.scrollHeight, rect.top, rect.height].join();
+        facts.stableFrames = facts.geometry === geometry ? (facts.stableFrames || 0) + 1 : 0;
+        facts.geometry = geometry;
+        return innerWidth === 560 && innerHeight === 860 && document.activeElement === all && facts.stableFrames >= 2;
+      }, null, { polling: "raf" });
+      const scrollBefore = await page.locator("#view-library").evaluate(e => { window.fixtureScrollFacts.record("baseline"); return e.scrollTop; });
       await all.press("Space");
       await finishToggle();
       assert.deepEqual(sent.filter(s => s.p.endsWith("/agents")).at(-1).body.agents.sort(), ["claude", "codex", "pi"]);
       assert.equal(await all.getAttribute("aria-pressed"), "true");
       assert(!(await page.locator("#status").textContent()).includes("/reload"), "reload hints only describe successfully deployed targets");
       assert(await all.evaluate(e => e === document.activeElement), "in-place updates preserve keyboard focus");
-      assert.equal(await page.locator("#view-library").evaluate(e => e.scrollTop), scrollBefore, "target toggles preserve page position");
+      const scrollFacts = await page.evaluate(() => { const facts = window.fixtureScrollFacts; facts.record("write finished"); facts.stop(); delete window.fixtureScrollFacts; return facts.events; });
+      if (process.env.PROMPT_SCROLL_DIAGNOSTICS) console.error(JSON.stringify({ engine, lang, scrollFacts }));
+      assert.equal(await page.locator("#view-library").evaluate(e => e.scrollTop), scrollBefore, `target toggles preserve page position: ${JSON.stringify(scrollFacts)}`);
       if (process.env.ARTIFACT_DIR && lang === "zh") {
         for (const color of ["light", "dark"]) {
           await page.evaluate(color => { document.documentElement.dataset.theme = color; }, color);
@@ -200,6 +275,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await chip("pi").press("Space");
       await finishToggle();
       assert.deepEqual(sent.filter(s => s.p.endsWith("/agents")).at(-1).body.agents, [], "an abnormal target can be explicitly deselected");
+      assert.equal(await page.locator(".lib-prompt-row .lib-tags .warn").count(), 0, "Needs attention clears when the abnormal target is deselected");
       await chip("claude").press("Space");
       await finishToggle();
       items[0].agents = ["claude", "codex"];
@@ -225,10 +301,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // open the template editor while composition is in progress.
       await page.locator(".lib-prompt-search").evaluate(e => {
         e.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
-        e.value = "审查";
-        e.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true, data: "审查" }));
+        e.value = "边界";
+        e.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true, data: "边界" }));
         e.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter", isComposing: true }));
-        e.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "审查" }));
+        e.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "边界" }));
       });
       assert.equal(await page.locator(".lib-prompt-editor").count(), 0);
       assert.equal(await page.locator(".lib-prompt-row").count(), 1);
@@ -256,7 +332,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator(".lib-set.open .name").click();
       await page.locator(".lib-prompt-row .name").click();
       assert.equal(await page.locator('[data-prompt="name"]').inputValue(), "审查");
-      assert((await page.locator('.lib-prompt-target[data-agent="claude"]').textContent()).includes({ en: "Native behavior", zh: "原生行为", "zh-TW": "原生行為", ja: "動作は未検証", de: "Natives Verhalten" }[lang]), "editor retains native acceptance information");
+      await page.locator('[data-prompt="name"]').fill("review-code");
+      assert(!(await page.locator('.lib-prompt-target[data-agent="claude"]').textContent()).includes("Native behavior awaits verification"), "editor does not retain a permanent native pending note");
       assert.equal(await page.locator("#modal select").count(), 0);
       assert(await page.locator("#modal").evaluate(el => el.scrollWidth <= el.clientWidth + 1));
       // Enable Pi through the page, then expire its runtime answer. Sending an
@@ -309,8 +386,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator(".lib-prompt-row .name").click();
       await page.waitForFunction(() => document.activeElement?.dataset.prompt === "name");
       await goneCodex.press("Space");
-      assert(!await goneCodex.isChecked());
-      assert(await goneCodex.isDisabled(), "an unavailable target cannot be re-enabled after explicit removal");
+      assert(await goneCodex.count() === 0 || await goneCodex.isDisabled(), "an unavailable target cannot be re-enabled after explicit removal");
       await page.locator(".lib-prompt-save").click();
       await page.locator(".lib-prompt-editor").waitFor({ state: "detached" });
       assert(!sent.filter(s => s.p.endsWith("/save")).at(-1).body.agents.includes("codex"));

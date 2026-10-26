@@ -2,11 +2,14 @@ package library
 
 import (
 	"context"
+	"crypto/sha256"
 	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,10 +18,14 @@ import (
 )
 
 // This is an independent client, not a plugin and never installed in DSH. The
-// original CLI and its original remote descriptors provide all native calls.
+// original CLI and registries provide all native calls.
 //
 //go:embed prompt_dsh_probe.mjs
 var dshPromptProbe string
+
+var dshPromptPackageName = regexp.MustCompile(`(?i)^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$`)
+var dshPromptVariableName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var dshPromptExportName = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*$`)
 
 func dshPromptEntry(dir string) string {
 	for _, base := range []string{filepath.Join(dir, "profiles", "node_modules", "@deepseek-ai", "dsh"), filepath.Join(dir, "node_modules", "@deepseek-ai", "dsh")} {
@@ -60,7 +67,7 @@ func dshPromptCopyProfile(dir, temp string) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	for _, rel := range []string{"profiles/web/package.json", "profiles/web/cordis.patch.yml", "cordis.patch.yml"} {
+	for _, rel := range []string{"profiles/web/package.json", "profiles/web/compatibility.json", "profiles/web/cordis.patch.yml", "cordis.patch.yml", ".env"} {
 		path := filepath.Join(dir, filepath.FromSlash(rel))
 		b, err := os.ReadFile(path)
 		if os.IsNotExist(err) && rel != "profiles/web/package.json" {
@@ -74,8 +81,8 @@ func dshPromptCopyProfile(dir, temp string) error {
 			if err := yaml.Unmarshal(b, &doc); err != nil {
 				return err
 			}
-			var check func(*yaml.Node) error
-			check = func(n *yaml.Node) error {
+			var check func(*yaml.Node, bool) error
+			check = func(n *yaml.Node, resource bool) error {
 				if n.Kind == yaml.AliasNode {
 					return fmt.Errorf("executable or aliased profile mapping requires verification: %s", path)
 				}
@@ -84,25 +91,36 @@ func dshPromptCopyProfile(dir, temp string) error {
 				default:
 					return fmt.Errorf("dynamic profile mapping requires verification: %s", path)
 				}
-				if n.Kind == yaml.ScalarNode && (filepath.IsAbs(n.Value) || strings.HasPrefix(n.Value, "file:") || strings.HasPrefix(n.Value, "~/") || strings.HasPrefix(n.Value, `~\`)) {
+				if !resource && n.Kind == yaml.ScalarNode && (filepath.IsAbs(n.Value) || strings.HasPrefix(n.Value, "file:") || strings.HasPrefix(n.Value, "~/") || strings.HasPrefix(n.Value, `~\`)) {
 					return fmt.Errorf("absolute profile resource requires isolated mapping: %s", path)
 				}
 				if n.Kind == yaml.MappingNode {
+					filesystem := false
 					for i := 0; i+1 < len(n.Content); i += 2 {
-						key := strings.ToLower(n.Content[i].Value)
-						if strings.Contains(key, "path") || strings.Contains(key, "dir") || strings.Contains(key, "home") || strings.Contains(key, "file") || strings.Contains(key, "storage") || strings.Contains(key, "database") {
-							return fmt.Errorf("profile resource mapping cannot be isolated: %s (%s)", path, n.Content[i].Value)
+						if n.Content[i].Value == "name" && n.Content[i+1].Value == "@deepseek-ai/dsh-skill-filesystem" {
+							filesystem = true
 						}
 					}
+					for i := 0; i+1 < len(n.Content); i += 2 {
+						key := strings.ToLower(n.Content[i].Value)
+						readRoot := resource && (key == "dshhome" || key == "agentshome" || key == "customskilldirs" || key == "bundledskilldir")
+						if !readRoot && (strings.Contains(key, "path") || strings.Contains(key, "dir") || strings.Contains(key, "home") || strings.Contains(key, "file") || strings.Contains(key, "storage") || strings.Contains(key, "database")) {
+							return fmt.Errorf("profile resource mapping cannot be isolated: %s (%s)", path, n.Content[i].Value)
+						}
+						if err := check(n.Content[i+1], readRoot || filesystem && key == "config"); err != nil {
+							return err
+						}
+					}
+					return nil
 				}
 				for _, child := range n.Content {
-					if err := check(child); err != nil {
+					if err := check(child, resource); err != nil {
 						return err
 					}
 				}
 				return nil
 			}
-			if err := check(&doc); err != nil {
+			if err := check(&doc, false); err != nil {
 				return err
 			}
 		}
@@ -118,8 +136,59 @@ func dshPromptCopyProfile(dir, temp string) error {
 }
 
 func readDSHPromptCommands(ctx context.Context, t PromptTarget, s nativePromptSnapshot) ([]nativePromptCommand, []string, error) {
-	bad := func(reason, detail string) ([]nativePromptCommand, []string, error) {
-		return nil, nil, &promptRuntimeError{reason, detail}
+	inventory, err := readDSHPromptInventory(ctx, t, s)
+	return inventory.Commands, inventory.Sources, err
+}
+
+type dshPromptInventory struct {
+	Commands []nativePromptCommand
+	Sources  []string
+	Warnings []string
+}
+
+func readDSHPromptInventory(ctx context.Context, t PromptTarget, s nativePromptSnapshot) (dshPromptInventory, error) {
+	// Each invoking directory needs its own native launch environment. Reusing
+	// a process would promote a previous project's dotenv values to inherited
+	// process values in the next context, changing both precedence and trust.
+	var inventory dshPromptInventory
+	for _, cwd := range s.dirs {
+		if err := ctx.Err(); err != nil {
+			return dshPromptInventory{}, err
+		}
+		found, err := readDSHPromptContextInventory(ctx, t, s, cwd)
+		if err != nil {
+			return dshPromptInventory{}, err
+		}
+		inventory.Commands = append(inventory.Commands, found.Commands...)
+		inventory.Sources = append(inventory.Sources, found.Sources...)
+		inventory.Warnings = append(inventory.Warnings, found.Warnings...)
+	}
+	slices.Sort(inventory.Sources)
+	inventory.Sources = slices.Compact(inventory.Sources)
+	slices.Sort(inventory.Warnings)
+	inventory.Warnings = slices.Compact(inventory.Warnings)
+	return inventory, nil
+}
+
+type dshPromptDiagnostic struct {
+	Kind       string `json:"kind"`
+	Plugin     string `json:"plugin"`
+	Dependency string `json:"dependency"`
+	Export     string `json:"export"`
+	Variable   string `json:"variable"`
+	Layer      string `json:"layer"`
+}
+
+func (d dshPromptDiagnostic) exportSource() string {
+	if d.Kind == "export" && len(d.Plugin) <= 214 && len(d.Dependency) <= 214 && len(d.Export) <= 128 && dshPromptPackageName.MatchString(d.Plugin) && dshPromptPackageName.MatchString(d.Dependency) && dshPromptExportName.MatchString(d.Export) {
+		return d.Plugin + ": " + d.Dependency + " (" + d.Export + ")"
+	}
+	return ""
+}
+
+func readDSHPromptContextInventory(ctx context.Context, t PromptTarget, s nativePromptSnapshot, cwd string) (dshPromptInventory, error) {
+	bad := func(reason, detail string) (dshPromptInventory, error) {
+		return dshPromptInventory{}, &promptRuntimeError{reason, detail}
 	}
 	node := proc.FindTool("node")
 	if node == "" {
@@ -127,45 +196,38 @@ func readDSHPromptCommands(ctx context.Context, t PromptTarget, s nativePromptSn
 	}
 	temp, err := os.MkdirTemp("", "magpie-dsh-prompt-check-")
 	if err != nil {
-		return nil, nil, err
+		return dshPromptInventory{}, err
 	}
 	defer os.RemoveAll(temp)
 	if err := dshPromptCopyProfile(t.dir, temp); err != nil {
 		return bad("DeepSeek Harness configuration cannot be safely mapped", err.Error())
 	}
-	// Preserve real skill roots while keeping settings and state temporary.
-	patch, _ := yaml.Marshal([]map[string]any{{"id": "skill-filesystem", "config": map[string]any{"dshHome": t.dir, "agentsHome": filepath.Dir(sharedSkillsDir())}}})
-	pf, err := os.OpenFile(filepath.Join(temp, "profiles/web/cordis.patch.yml"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-	if err != nil {
-		return nil, nil, err
-	}
-	_, err = pf.Write(append([]byte("\n"), patch...))
-	closeErr := pf.Close()
-	if err != nil {
-		return nil, nil, err
-	}
-	if closeErr != nil {
-		return nil, nil, closeErr
-	}
-	// Link executable dependencies only. Configuration, credentials, sessions
-	// and storage are physical temporary files, never links to the user's home.
+	// The shared installation stays linked. Profile-local packages are copied
+	// by the client: a directory link would move their real importers outside
+	// the native profile resolver's scope and lose installation peer fallback.
 	deps := filepath.Join(t.dir, "profiles", "node_modules")
 	if _, err := os.Stat(deps); err != nil {
-		return nil, nil, err
+		return dshPromptInventory{}, err
 	}
 	if err := os.Symlink(deps, filepath.Join(temp, "profiles", "node_modules")); err != nil {
 		return bad("DeepSeek Harness configuration cannot be safely mapped", "Could not link native dependencies")
 	}
 	helper := filepath.Join(temp, "probe.mjs")
 	if err := os.WriteFile(helper, []byte(dshPromptProbe), 0600); err != nil {
-		return nil, nil, err
+		return dshPromptInventory{}, err
 	}
-	request, _ := json.Marshal(map[string]any{"entry": s.bin, "home": temp, "sourceHome": t.dir, "agentsHome": filepath.Dir(sharedSkillsDir()), "cwds": s.dirs})
+	envCwd := cwd
+	if promptSamePath(cwd, t.dir) {
+		envCwd = temp
+	}
+	request, _ := json.Marshal(map[string]any{"entry": s.bin, "home": temp, "sourceHome": t.dir, "agentsHome": filepath.Dir(sharedSkillsDir()), "cwds": []string{cwd}, "envCwd": envCwd})
 	cmd := proc.Command(node, helper)
 	cmd.Dir = temp
 	cmd.Stdin = strings.NewReader(string(request))
 	cmd.WaitDelay = time.Second
-	out, stderr := &boundedPiOutput{}, &boundedPiOutput{}
+	// Native dependency resolution includes absent shadowing candidates as
+	// well as physical sources. Keep a bounded larger inventory envelope.
+	out, stderr := &boundedPiOutput{limit: 8 << 20}, &boundedPiOutput{}
 	cmd.Stdout, cmd.Stderr = out, stderr
 	tree, err := proc.StartTree(cmd)
 	if err != nil {
@@ -189,23 +251,57 @@ func readDSHPromptCommands(ctx context.Context, t PromptTarget, s nativePromptSn
 		}
 		return bad("Native command verification timed out or was cancelled", stage)
 	}
-	if err != nil || out.tooLarge || stderr.failed() {
+	if out.tooLarge || stderr.tooLarge {
 		return bad("DeepSeek Harness native inventory could not be read", "Native startup, authorization or protocol failed")
 	}
 	var result struct {
-		Commands []nativePromptCommand `json:"commands"`
-		Complete bool                  `json:"complete"`
-		Reason   string                `json:"reason"`
-		Sources  []string              `json:"sources"`
+		Commands   []nativePromptCommand `json:"commands"`
+		Complete   bool                  `json:"complete"`
+		Reason     string                `json:"reason"`
+		Sources    []string              `json:"sources"`
+		Diagnostic dshPromptDiagnostic   `json:"diagnostic"`
+		Warnings   []dshPromptDiagnostic `json:"warnings"`
+		StderrHash string                `json:"stderrHash"`
 	}
 	lines := strings.Split(strings.TrimSpace(out.b.String()), "\n")
 	if json.Unmarshal([]byte(lines[len(lines)-1]), &result) != nil {
 		return bad("Native skill verification returned invalid output", "DeepSeek Harness")
 	}
-	// There is deliberately no inference from an empty list, active plugins or
-	// a clean log. The current native endpoint omits provider completeness.
+	// The independent native client must prove provider/source completeness;
+	// an empty list, active plugins or a clean log cannot replace that proof.
 	if !result.Complete {
+		d := result.Diagnostic
+		if d.Kind == "dependency" && len(d.Plugin) <= 214 && len(d.Dependency) <= 214 && dshPromptPackageName.MatchString(d.Plugin) && dshPromptPackageName.MatchString(d.Dependency) {
+			return bad("DeepSeek Harness plugin dependency could not be loaded", d.Plugin+": "+d.Dependency)
+		}
+		if source := d.exportSource(); source != "" {
+			return bad("DeepSeek Harness plugin requires an export unavailable in the installed dependency", source)
+		}
+		if d.Kind == "environment" && len(d.Variable) <= 256 && dshPromptVariableName.MatchString(d.Variable) && (d.Layer == "user" || d.Layer == "project") {
+			root := cwd
+			if d.Layer == "user" {
+				root = t.dir
+			}
+			return bad("DeepSeek Harness environment variable is restricted to the launching process", filepath.Join(root, ".env")+": "+d.Variable)
+		}
 		return bad("DeepSeek Harness skill source completeness could not be verified", result.Reason)
 	}
-	return result.Commands, result.Sources, nil
+	stderrValid := !stderr.failed()
+	if len(result.Warnings) > 0 {
+		// Only the complete native audit warning proven by this launch may
+		// appear on stderr. Any additional byte still invalidates the result.
+		stderrValid = result.StderrHash == fmt.Sprintf("%x", sha256.Sum256([]byte(stderr.b.String())))
+	}
+	if err != nil || !stderrValid {
+		return bad("DeepSeek Harness native inventory could not be read", "Native startup, authorization or protocol failed")
+	}
+	inventory := dshPromptInventory{Commands: result.Commands, Sources: result.Sources}
+	for _, warning := range result.Warnings {
+		source := warning.exportSource()
+		if source == "" {
+			return bad("Native skill verification returned invalid output", "DeepSeek Harness")
+		}
+		inventory.Warnings = append(inventory.Warnings, source)
+	}
+	return inventory, nil
 }

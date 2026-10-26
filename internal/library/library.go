@@ -21,10 +21,11 @@ import (
 
 // Library is library.json: what magpie keeps, and which agents get it.
 type Library struct {
-	Prompts      []*Prompt    `json:"prompts,omitempty"`
-	Instructions Instructions `json:"instructions"`
-	MCP          []*Server    `json:"mcp"`
-	Skills       []*Skill     `json:"skills"`
+	Prompts        []*Prompt    `json:"prompts,omitempty"`
+	PromptsEnabled *bool        `json:"promptsEnabled,omitempty"`
+	Instructions   Instructions `json:"instructions"`
+	MCP            []*Server    `json:"mcp"`
+	Skills         []*Skill     `json:"skills"`
 	// Projects are folders whose agents get some of the skills there
 	Projects []*Project `json:"projects,omitempty"`
 	// Hooks are commands the agents ticked for each run at a point of
@@ -146,6 +147,11 @@ func load() (*Library, error) {
 	}
 	if err := checkPromptRecords(l.Prompts); err != nil {
 		return nil, fmt.Errorf("%s: %w", path(), err)
+	}
+	// Resolve the legacy default before an edit adds the first template.
+	if l.PromptsEnabled == nil {
+		enabled := len(l.Prompts) > 0
+		l.PromptsEnabled = &enabled
 	}
 	for _, p := range l.Prompts {
 		p.Agents = promptAgents(p.Agents)

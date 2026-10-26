@@ -33,12 +33,18 @@ type PromptView struct {
 
 // PromptsView is the prompt template section of the Library page.
 type PromptsView struct {
+	Enabled bool           `json:"enabled"`
 	Items   []PromptView   `json:"items"`
 	Targets []PromptTarget `json:"targets"`
+	Checks  []PromptState  `json:"checks"`
 }
 
 func (l *Library) promptsView() *PromptsView {
-	v := &PromptsView{Items: []PromptView{}, Targets: promptTargets()}
+	r := &promptReader{Library: l}
+	v := &PromptsView{Enabled: l.promptsEnabled(), Items: []PromptView{}, Targets: promptTargets(), Checks: []PromptState{}}
+	for _, target := range v.Targets {
+		v.Checks = append(v.Checks, r.promptHarnessState(target))
+	}
 	for _, p := range l.Prompts {
 		pv := PromptView{Prompt: *p, States: []PromptState{}}
 		pv.Agents = append([]string{}, p.Agents...)
@@ -52,15 +58,120 @@ func (l *Library) promptsView() *PromptsView {
 			pv.Text = string(body)
 		}
 		for _, t := range v.Targets {
-			state := l.promptState(t, p, pv.Text)
+			state := r.promptState(t, p, pv.Text)
 			if err != nil {
 				state.Status, state.Reason = "unverified", "Could not read template text"
+				state.Deployed = false
 			}
 			pv.States = append(pv.States, state)
 		}
 		v.Items = append(v.Items, pv)
 	}
 	return v
+}
+
+func (l *Library) promptsEnabled() bool {
+	if l.PromptsEnabled != nil {
+		return *l.PromptsEnabled
+	}
+	return len(l.Prompts) > 0
+}
+
+// SetPromptsEnabledContext changes deployment without discarding templates or
+// their selected targets. Only an explicit activation may start Harnesses.
+func SetPromptsEnabledContext(ctx context.Context, enabled bool) (*Result, error) {
+	mu.Lock()
+	l, err := load()
+	activate := err == nil && enabled && !l.promptsEnabled()
+	if err == nil {
+		l.PromptsEnabled = &enabled
+		err = l.save()
+	}
+	mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	if activate {
+		for _, target := range promptTargets() {
+			if !target.Detected {
+				continue
+			}
+			switch target.ID {
+			case "pi":
+				l.checkPiCommands(ctx, target)
+			case "codex", "dsh":
+				l.checkNativePromptCommands(ctx, target)
+			}
+		}
+	}
+	// Read the current switch again: a close made while verification was
+	// running must not be undone by the earlier activation finishing.
+	res, err := changePrompts(func(current *Library) error {
+		// Activation releases the lock for native checks, but its initial
+		// index change and later deployment changes share one backup.
+		current.kept = l.kept
+		return nil
+	})
+	if activate && err == nil {
+		view, readErr := ReadPrompts()
+		if readErr != nil {
+			return res, readErr
+		}
+		if view.Enabled {
+			for _, state := range view.Checks {
+				if state.Status == "unverified" {
+					res.fail(state.Agent, "prompts", fmt.Errorf("%s: %s", state.Reason, state.Source))
+				}
+			}
+		}
+	}
+	return res, err
+}
+
+// promptHarnessState describes inventory evidence without inventing a template
+// name. Template-specific collisions and file ownership are checked separately.
+func (l *Library) promptHarnessState(t PromptTarget) PromptState {
+	return (&promptReader{Library: l}).promptHarnessState(t)
+}
+
+func (r *promptReader) promptHarnessState(t PromptTarget) PromptState {
+	l := r.Library
+	s := PromptState{Agent: t.ID, Status: "available"}
+	if !t.Detected {
+		s.Status, s.Reason = "unsupported", "Not installed here"
+		return s
+	}
+	if !l.promptsEnabled() {
+		s.Status, s.Reason = "disabled", "Prompt templates are turned off"
+		return s
+	}
+	var err error
+	switch t.ID {
+	case "pi":
+		_, err = r.piCommandConflict(t, nil)
+		s.CheckedAt = r.pi[t.dir].check.checkedAt
+	case "codex", "dsh":
+		c, e := r.nativePromptEvidence(t)
+		err, s.CheckedAt = e, c.checkedAt
+	}
+	if err != nil {
+		s.Status, s.Reason, s.Source = "unverified", "Could not check command sources", err.Error()
+		if e, ok := err.(*promptRuntimeError); ok {
+			s.Reason, s.Source = e.reason, e.detail
+		}
+	}
+	return s
+}
+
+func promptLastChecked(t PromptTarget) int64 {
+	if t.ID == "pi" {
+		piCommandChecks.Lock()
+		defer piCommandChecks.Unlock()
+		return piCommandChecks.m[t.dir].checkedAt
+	}
+	nativePromptChecks.Lock()
+	defer nativePromptChecks.Unlock()
+	return nativePromptChecks.m[nativePromptCacheKey(t)].checkedAt
 }
 
 // PromptChange saves the complete form. A nil Agents keeps an existing
@@ -72,6 +183,10 @@ type PromptChange struct {
 	Agents []string `json:"agents"`
 	// Passive is used by save preflight: it must not start Harnesses or load extensions/plugins.
 	Passive bool `json:"passive,omitempty"`
+	// Target limits an explicit check to one Harness; an empty value checks all.
+	Target string `json:"target,omitempty"`
+	// Force refreshes successful evidence instead of reusing this process's cache.
+	Force bool `json:"force,omitempty"`
 }
 
 func promptPath(id string) string  { return filepath.Join(Dir(), "prompts", id+".md") }
@@ -111,6 +226,23 @@ func (l *Library) putPromptText(id, text string) error {
 }
 
 func checkPromptName(name string) error {
+	if len(name) == 0 || len(name) > 60 {
+		return fmt.Errorf("prompt name must contain 1–60 characters")
+	}
+	for i, r := range name {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			continue
+		}
+		if r != '-' || i == 0 || i == len(name)-1 || name[i-1] == '-' {
+			return fmt.Errorf("prompt name: use lowercase letters and digits separated by single hyphens")
+		}
+	}
+	return nil
+}
+
+// Stored names keep their original validation so an older template never
+// prevents reading, exporting, deselecting or deleting the rest of the library.
+func checkStoredPromptName(name string) error {
 	if !utf8.ValidString(name) || name == "" || utf8.RuneCountInString(name) > 60 {
 		return fmt.Errorf("prompt name must contain 1–60 characters")
 	}
@@ -138,7 +270,7 @@ func checkPromptRecords(ps []*Prompt) error {
 		if err := checkName("prompt id", p.ID); err != nil {
 			return err
 		}
-		if err := checkPromptName(p.Name); err != nil {
+		if err := checkStoredPromptName(p.Name); err != nil {
 			return err
 		}
 		if ids[p.ID] || names[promptKey(p.Name)] {
@@ -207,9 +339,18 @@ func CheckPrompt(c PromptChange) ([]PromptState, error) {
 func CheckPromptContext(ctx context.Context, c PromptChange) ([]PromptState, error) {
 	c.Name = strings.TrimSpace(c.Name)
 	c.Agents = promptAgents(c.Agents)
+	targets := promptTargets()
+	if c.Target != "" {
+		t, ok := promptTargetByID(targets, c.Target)
+		if !ok {
+			return nil, fmt.Errorf("native templates are unavailable for target %s", c.Target)
+		}
+		targets = []PromptTarget{t}
+	}
 	mu.Lock()
 	l, err := load()
-	if err == nil {
+	global := c.Name == "" && c.ID == "" && c.Text == ""
+	if err == nil && !global {
 		err = l.checkPrompt(c)
 	}
 	mu.Unlock()
@@ -217,12 +358,24 @@ func CheckPromptContext(ctx context.Context, c PromptChange) ([]PromptState, err
 		return nil, err
 	}
 	if !c.Passive {
-		if t, ok := promptTargetByID(promptTargets(), "pi"); ok && t.Detected {
-			l.checkPiCommands(ctx, t)
-		}
-		for _, target := range promptTargets() {
-			if target.Detected && (target.ID == "codex" || target.ID == "dsh") {
-				l.checkNativePromptCommands(ctx, target)
+		for _, target := range targets {
+			if target.Detected {
+				switch target.ID {
+				case "pi":
+					if !c.Force {
+						if _, e := l.piCommandConflict(target, nil); e == nil {
+							continue
+						}
+					}
+					l.checkPiCommands(ctx, target)
+				case "codex", "dsh":
+					if !c.Force {
+						if _, e := l.nativePromptEvidence(target); e == nil {
+							continue
+						}
+					}
+					l.checkNativePromptCommands(ctx, target)
+				}
 			}
 		}
 	}
@@ -232,13 +385,22 @@ func CheckPromptContext(ctx context.Context, c PromptChange) ([]PromptState, err
 	if err != nil {
 		return nil, err
 	}
-	if err := l.checkPrompt(c); err != nil {
-		return nil, err
+	if !global {
+		if err := l.checkPrompt(c); err != nil {
+			return nil, err
+		}
 	}
 	out := []PromptState{}
 	p := &Prompt{ID: c.ID, Name: c.Name}
-	for _, target := range promptTargets() {
-		out = append(out, l.promptState(target, p, c.Text))
+	for _, target := range targets {
+		var state PromptState
+		if global {
+			state = l.promptHarnessState(target)
+		} else {
+			state = l.promptState(target, p, c.Text)
+		}
+		state.CheckedAt = promptLastChecked(target)
+		out = append(out, state)
 	}
 	return out, nil
 }
@@ -351,6 +513,83 @@ func SetPromptAgents(id string, agents []string) (*Result, error) {
 			next = append(next, agent)
 		}
 		p.Agents = next
+		return nil
+	})
+	if res != nil {
+		res.Problems = append(res.Problems, blocked...)
+	}
+	return res, err
+}
+
+// SetPromptHarnessContext changes one Harness's selection for current templates.
+// Other Harness selections and template bodies remain unchanged.
+func SetPromptHarnessContext(ctx context.Context, target string, enabled bool) (*Result, error) {
+	if _, ok := promptTargetByID(promptTargets(), target); !ok {
+		return nil, fmt.Errorf("unknown prompt target: %s", target)
+	}
+	mu.Lock()
+	l, err := load()
+	var ids []string
+	if err == nil {
+		if !l.promptsEnabled() {
+			err = fmt.Errorf("Prompt templates are turned off")
+		} else {
+			for _, p := range l.Prompts {
+				ids = append(ids, p.ID)
+			}
+		}
+	}
+	mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return &Result{Changed: []string{}, Problems: []Problem{}}, nil
+	}
+	if enabled {
+		if _, err := CheckPromptContext(ctx, PromptChange{Target: target}); err != nil {
+			return nil, err
+		}
+	}
+	var blocked []Problem
+	res, err := changePrompts(func(l *Library) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !l.promptsEnabled() {
+			return fmt.Errorf("Prompt templates are turned off")
+		}
+		t, _ := promptTargetByID(promptTargets(), target)
+		r := &promptReader{Library: l}
+		for _, p := range l.Prompts {
+			// A template created while the native check runs is outside this operation.
+			if !slices.Contains(ids, p.ID) {
+				continue
+			}
+			if !enabled {
+				p.Agents = slices.DeleteFunc(p.Agents, func(id string) bool { return id == target })
+				continue
+			}
+			if slices.Contains(p.Agents, target) {
+				continue // Sync retries existing selections and reports protected files.
+			}
+			body, bodyErr := os.ReadFile(promptPath(p.ID))
+			if bodyErr == nil {
+				bodyErr = checkPromptText(string(body))
+			}
+			state := r.promptState(t, p, string(body))
+			if bodyErr != nil {
+				state.Status, state.Reason, state.Source = "unverified", "Could not read template text", ""
+			}
+			if !promptUsable(state) {
+				blocked = append(blocked, Problem{Agent: target, What: "prompt:" + p.Name, Error: strings.TrimSpace(state.Reason + " " + state.Source)})
+				continue
+			}
+			p.Agents = promptAgents(append(p.Agents, target))
+		}
 		return nil
 	})
 	if res != nil {

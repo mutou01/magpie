@@ -26,11 +26,13 @@ type PromptTarget struct {
 }
 
 type PromptState struct {
-	Agent  string `json:"agent"`
-	Status string `json:"status"` // available, enabled, conflict, unsupported, unverified, edited
-	Reason string `json:"reason,omitempty"`
-	Source string `json:"source,omitempty"`
-	Path   string `json:"path,omitempty"`
+	Agent     string `json:"agent"`
+	Status    string `json:"status"`             // available, enabled, disabled, conflict, unsupported, unverified, edited
+	Deployed  bool   `json:"deployed,omitempty"` // Owned body/policy match, with no known disablement or conflict; not permission to write.
+	Reason    string `json:"reason,omitempty"`
+	Source    string `json:"source,omitempty"`
+	Path      string `json:"path,omitempty"`
+	CheckedAt int64  `json:"checkedAt,omitempty"` // Last completed runtime check, Unix milliseconds.
 }
 
 // These catalogs deliberately include conditional built-ins and aliases. They

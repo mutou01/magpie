@@ -22,9 +22,16 @@ func promptHash(b []byte) string { return fmt.Sprintf("%x", sha256.Sum256(b)) }
 
 func (l *Library) syncPrompts(b *backups, res *Result) {
 	all := promptTargets()
+	enabled := l.promptsEnabled()
 	for _, t := range all {
+		r := &promptReader{Library: l}
+		type publication struct {
+			prompt *Prompt
+			files  map[string][]byte
+		}
+		var publish []publication
 		for _, p := range l.Prompts {
-			if !slices.Contains(p.Agents, t.ID) || !t.Detected {
+			if !enabled || !slices.Contains(p.Agents, t.ID) || !t.Detected {
 				continue
 			}
 			body, err := os.ReadFile(promptPath(p.ID))
@@ -40,10 +47,16 @@ func (l *Library) syncPrompts(b *backups, res *Result) {
 				res.fail(t.ID, "prompt:"+p.Name, err)
 				continue
 			}
-			if state := l.promptState(t, p, string(body)); !promptUsable(state) {
+			if state := r.promptState(t, p, string(body)); !promptUsable(state) {
 				res.fail(t.ID, "prompt:"+p.Name, fmt.Errorf("%s: %s", state.Reason, state.Source))
 				continue
 			}
+			publish = append(publish, publication{p, files})
+		}
+		// Finish shared source reads before publishing. Individual destination
+		// files are still read and checked against ownership just before writing.
+		for _, item := range publish {
+			p, files := item.prompt, item.files
 			a := l.applied(t.ID)
 			if a.Prompts == nil {
 				a.Prompts = map[string]*AppliedPrompt{}
@@ -120,6 +133,24 @@ func (l *Library) syncPrompts(b *backups, res *Result) {
 			}
 		}
 	}
+	// Publishing can change discovery roots. Retirement gets fresh evidence,
+	// collected before any removal, never the pre-publication reader.
+	r := &promptReader{Library: l}
+	retirement := map[[2]string]PromptState{}
+	for id, a := range l.Applied {
+		for pid := range a.Prompts {
+			p := l.prompt(pid)
+			if !enabled || p == nil || !slices.Contains(p.Agents, id) {
+				continue
+			}
+			t, ok := promptTargetByID(all, id)
+			body, err := os.ReadFile(promptPath(pid))
+			if !ok || err != nil || checkPromptText(string(body)) != nil {
+				continue
+			}
+			retirement[[2]string{id, pid}] = r.promptState(t, p, string(body))
+		}
+	}
 	// Retire only owned, unedited files after a rename, deselection or removal.
 	for id, a := range l.Applied {
 		for pid, old := range a.Prompts {
@@ -128,14 +159,14 @@ func (l *Library) syncPrompts(b *backups, res *Result) {
 				continue
 			}
 			var desired map[string][]byte
-			if p := l.prompt(pid); p != nil && (id == "codex" || id == "codex-desktop") && (slices.Contains(p.Agents, "codex") || slices.Contains(p.Agents, "codex-desktop")) {
+			if p := l.prompt(pid); enabled && p != nil && (id == "codex" || id == "codex-desktop") && (slices.Contains(p.Agents, "codex") || slices.Contains(p.Agents, "codex-desktop")) {
 				// Without the body we cannot prove which shared files are still
 				// needed. Keep the existing ownership, not just the file itself.
 				if _, err := os.ReadFile(promptPath(pid)); err != nil {
 					continue
 				}
 			}
-			if p := l.prompt(pid); p != nil && slices.Contains(p.Agents, id) {
+			if p := l.prompt(pid); enabled && p != nil && slices.Contains(p.Agents, id) {
 				// An unknown source or unsupported target never means remove.
 				body, err := os.ReadFile(promptPath(pid))
 				if err == nil {
@@ -145,7 +176,10 @@ func (l *Library) syncPrompts(b *backups, res *Result) {
 					continue
 				}
 				if t, ok := promptTargetByID(all, id); ok {
-					state := l.promptState(t, p, string(body))
+					state, checked := retirement[[2]string{id, pid}]
+					if !checked {
+						continue
+					}
 					if state.Status == "edited" || state.Status == "unverified" {
 						continue
 					}
@@ -156,11 +190,29 @@ func (l *Library) syncPrompts(b *backups, res *Result) {
 					continue
 				}
 			}
+			if id == "codex" || id == "codex-desktop" {
+				// Body and invocation policy form one deployment, including
+				// ownership split across legacy CLI/Desktop records. Never
+				// retire half of an externally edited skill.
+				if edited, err := l.promptCodexRetirementCheck(pid); err != nil {
+					res.fail(id, "prompt:"+pid, err)
+					if edited && l.prompt(pid) == nil {
+						// Deletion releases the retained skill to the user. Drop
+						// both legacy records together so neither half is retired.
+						for _, target := range []string{"codex", "codex-desktop"} {
+							if applied := l.Applied[target]; applied != nil {
+								delete(applied.Prompts, pid)
+							}
+						}
+					}
+					continue
+				}
+			}
 			for path, hash := range old.Files {
 				if slices.ContainsFunc(slices.Collect(maps.Keys(desired)), func(want string) bool { return promptSamePath(path, want) }) {
 					continue
 				}
-				if l.promptSharedPathNeeded(all, id, pid, path, hash) {
+				if enabled && l.promptSharedPathNeeded(all, id, pid, path, hash, retirement) {
 					delete(old.Files, path)
 					continue
 				}
@@ -196,9 +248,31 @@ func (l *Library) syncPrompts(b *backups, res *Result) {
 	}
 }
 
+func (l *Library) promptCodexRetirementCheck(pid string) (bool, error) {
+	for _, id := range []string{"codex", "codex-desktop"} {
+		a := l.Applied[id]
+		if a == nil || a.Prompts[pid] == nil {
+			continue
+		}
+		for path, hash := range a.Prompts[pid].Files {
+			cur, err := os.ReadFile(path)
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				return false, err
+			}
+			if promptHash(cur) != hash {
+				return true, fmt.Errorf("externally edited template kept with its invocation policy: %s", path)
+			}
+		}
+	}
+	return false, nil
+}
+
 // A shared deployment is retired only after its last selected consumer stops
 // needing that physical file. This also understands legacy Desktop records.
-func (l *Library) promptSharedPathNeeded(all []PromptTarget, id, pid, path, hash string) bool {
+func (l *Library) promptSharedPathNeeded(all []PromptTarget, id, pid, path, hash string, retirement map[[2]string]PromptState) bool {
 	if id != "codex" && id != "codex-desktop" {
 		return false
 	}
@@ -241,8 +315,8 @@ func (l *Library) promptSharedPathNeeded(all []PromptTarget, id, pid, path, hash
 			}
 		}
 		if a := l.Applied[other]; a != nil && a.Prompts[pid] != nil {
-			state := l.promptState(t, p, string(body))
-			if state.Status == "unverified" || state.Status == "edited" {
+			state, checked := retirement[[2]string{other, pid}]
+			if !checked || state.Status == "unverified" || state.Status == "edited" {
 				for owned := range a.Prompts[pid].Files {
 					if promptSamePath(path, owned) {
 						return true
@@ -254,8 +328,8 @@ func (l *Library) promptSharedPathNeeded(all []PromptTarget, id, pid, path, hash
 	return false
 }
 
-// Link a flushed staging file into a new name without replacing a file created
-// after the conflict check. Filesystems without hard links report a problem.
+// Publish a flushed staging file without replacing a file created after the
+// conflict check. Existing owned files still use the normal atomic editor.
 func writePromptFile(path string, data []byte, expected string) error {
 	info, err := os.Lstat(path)
 	if err == nil {
@@ -289,5 +363,5 @@ func writePromptFile(path string, data []byte, expected string) error {
 	if err := edit.WriteAtomic(stage, data); err != nil {
 		return err
 	}
-	return os.Link(stage, path)
+	return publishPromptFile(stage, path)
 }

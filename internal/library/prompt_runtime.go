@@ -32,9 +32,10 @@ type piCommand struct {
 }
 
 type piCommandCheck struct {
-	key      string
-	commands []piCommand
-	err      error
+	key       string
+	commands  []piCommand
+	err       error
+	checkedAt int64
 }
 
 var piCommandChecks = struct {
@@ -46,31 +47,53 @@ var piCommandChecks = struct {
 var piCheckBudget = 30 * time.Second
 
 func (l *Library) piCommandConflict(t PromptTarget, p *Prompt) (string, error) {
-	s, err := l.piCommandSnapshot(t)
-	if err != nil {
-		piCommandChecks.Lock()
-		delete(piCommandChecks.m, t.dir)
-		piCommandChecks.Unlock()
-		return "", err
+	return (&promptReader{Library: l}).piCommandConflict(t, p)
+}
+
+func (r *promptReader) piCommandEvidence(t PromptTarget) promptPiEvidence {
+	if e, ok := r.pi[t.dir]; ok {
+		return e
 	}
-	for _, name := range s.builtins {
-		if promptKey(name) == promptKey(p.Name) {
+	e := promptPiEvidence{}
+	e.snapshot, e.snapshotErr = r.piCommandSnapshot(t)
+	piCommandChecks.Lock()
+	e.check = piCommandChecks.m[t.dir]
+	_, ok := piCommandChecks.m[t.dir]
+	if e.snapshotErr != nil {
+		delete(piCommandChecks.m, t.dir)
+		e.err = e.snapshotErr
+	} else if !ok || e.check.key != e.snapshot.key {
+		delete(piCommandChecks.m, t.dir)
+		e.err = &promptRuntimeError{"Check Pi command availability again", t.dir}
+	} else {
+		e.err = e.check.err
+	}
+	piCommandChecks.Unlock()
+	if r.pi == nil {
+		r.pi = map[string]promptPiEvidence{}
+	}
+	r.pi[t.dir] = e
+	return e
+}
+
+func (r *promptReader) piCommandConflict(t PromptTarget, p *Prompt) (string, error) {
+	l := r.Library
+	e := r.piCommandEvidence(t)
+	if e.snapshotErr != nil {
+		return "", e.snapshotErr
+	}
+	for _, name := range e.snapshot.builtins {
+		if p != nil && promptKey(name) == promptKey(p.Name) {
 			return "Pi /" + name, nil
 		}
 	}
-	piCommandChecks.Lock()
-	c, ok := piCommandChecks.m[t.dir]
-	piCommandChecks.Unlock()
-	if !ok || c.key != s.key {
-		piCommandChecks.Lock()
-		delete(piCommandChecks.m, t.dir)
-		piCommandChecks.Unlock()
-		return "", &promptRuntimeError{"Check Pi command availability again", t.dir}
+	if e.err != nil {
+		return "", e.err
 	}
-	if c.err != nil {
-		return "", c.err
+	if p == nil {
+		return "", nil
 	}
-	for _, cmd := range c.commands {
+	for _, cmd := range e.check.commands {
 		if cmd.managed {
 			continue
 		}
@@ -98,6 +121,11 @@ func (l *Library) checkPiCommands(ctx context.Context, t PromptTarget) {
 	piCommandChecks.Unlock()
 	s, err := l.piCommandSnapshot(t)
 	if err != nil {
+		piCommandChecks.Lock()
+		if piCommandChecks.seq[t.dir] == seq {
+			piCommandChecks.m[t.dir] = piCommandCheck{err: err, checkedAt: time.Now().UnixMilli()}
+		}
+		piCommandChecks.Unlock()
 		return
 	}
 	c := piCommandCheck{key: s.key}
@@ -137,6 +165,7 @@ func (l *Library) checkPiCommands(ctx context.Context, t PromptTarget) {
 	if ctx.Err() != nil {
 		c.err = &promptRuntimeError{"Pi command verification was cancelled", t.dir}
 	}
+	c.checkedAt = time.Now().UnixMilli()
 	piCommandChecks.Lock()
 	if piCommandChecks.seq[t.dir] == seq {
 		piCommandChecks.m[t.dir] = c
@@ -150,14 +179,19 @@ type boundedPiOutput struct {
 	sync.Mutex
 	b        strings.Builder
 	tooLarge bool
+	limit    int
 }
 
 func (w *boundedPiOutput) Write(b []byte) (int, error) {
 	w.Lock()
 	defer w.Unlock()
-	if w.b.Len()+len(b) > 1<<20 {
+	limit := w.limit
+	if limit == 0 {
+		limit = 1 << 20
+	}
+	if w.b.Len()+len(b) > limit {
 		w.tooLarge = true
-		return 0, fmt.Errorf("Pi output exceeds 1 MiB")
+		return 0, fmt.Errorf("native output exceeds %d bytes", limit)
 	}
 	return w.b.Write(b)
 }

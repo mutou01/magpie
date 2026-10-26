@@ -43,7 +43,7 @@ must never modify the Harness program, source or protocol: it reads and executes
 the original installation and writes templates only to native resource folders.
 
 [`prompts.go`](../../internal/library/prompts.go) owns `Prompt`, `ReadPrompts`,
-`CheckPrompt`, `SavePrompt`, `SetPromptAgents` and `RemovePrompt`. UTF-8 bodies live at
+`CheckPrompt`, `SavePrompt`, `SetPromptAgents`, `SetPromptHarnessContext` and `RemovePrompt`. UTF-8 bodies live at
 `library/prompts/<id>.md`. [`prompt_store.go`](../../internal/library/prompt_store.go)
 keeps metadata, selected target ids and this machine's deployment paths/hashes
 in the authoritative, versioned `library/prompts.json`. `library.json` retains a
@@ -56,6 +56,18 @@ index fails the operation instead of falling back to an empty library or stale
 ownership. Changed indexes use the existing atomic writer and join the change's
 normal file backup; unchanged indexes are not rewritten.
 
+The index's `enabled` switch controls deployment independently of saved target
+choices. Legacy indexes with templates default on; empty libraries default off.
+Reads infer that default without writing or starting a Harness. Turning off
+retires unchanged managed files and retains the templates and target choices.
+Externally edited files are kept and reported. Codex's body and explicit-only
+policy are retired as a group: an edit to either member keeps both, including
+ownership split across legacy CLI/Desktop records.
+Deleting the template keeps an externally edited Codex deployment as a group
+but releases both ownership records, making it an ordinary user skill again.
+Turning off or deselecting retains ownership of that protected group.
+Read failures retain ownership so retirement can be retried after access returns.
+
 This protects template metadata from older writers, not all concurrent changes
 to shared instructions, skills or agent files. Older versions cannot manage
 templates. Do not use multiple versions to edit the same Library concurrently.
@@ -63,9 +75,12 @@ Missing indexes are not reconstructed automatically from orphan Markdown or
 matching commands: names, target choices and ownership must be established from
 independent evidence before recovery. Keep the original files aside first.
 Portable bundles still carry only template ids, names, choices and text, never
-the local index's deployment paths/hashes. Names allow
-letters (including Chinese), numbers, `-` and `_`, at most 60 characters.
-NFKC and case-insensitive comparison prevents equivalent library names.
+the local index's deployment paths/hashes. New names are 1–60 ASCII characters
+matching `^[a-z0-9]+(?:-[a-z0-9]+)*$`, the common directly invocable namespace.
+Legacy names remain readable, portable, removable and disableable; editing or
+deploying them requires an explicit rename. Stored-data validation retains the
+legacy grammar so one old name cannot make the entire Library unreadable.
+NFKC and case-insensitive comparison prevents equivalent stored names.
 
 [`prompt_targets.go`](../../internal/library/prompt_targets.go) writes Claude
 commands and Pi prompts as Markdown with `$ARGUMENTS`, invoked as `/name`.
@@ -90,8 +105,9 @@ The shared physical skill files retain the same ownership protection. Legacy
 mutation; reads do not rewrite files.
 Legacy request ids remain accepted, while saved selections use `codex`.
 The editor preserves existing selections when a passive check fails, including
-an unavailable target. Such a checkbox stays selected and can be cleared; once
-cleared, the blocked target cannot be selected again. Editing the body alone
+an unavailable target. Such a checkbox stays selected and can be cleared.
+Unverified installed targets can be retried; conflicting, externally edited or
+uninstalled targets cannot be newly selected. Editing the body alone
 must not silently remove a deployment.
 DeepSeek Harness writes a native `SKILL.md` with `disable-model-invocation: true`
 and `user-invocable: true`, invoked as `/name`. Its native names require lowercase
@@ -109,11 +125,51 @@ artifacts. This does not claim coverage of future dynamically added commands.
 Save rechecks passive evidence under the Library lock. Missing template bodies
 are never treated as empty text.
 
-Only explicit **Check availability** may start verification processes. Opening,
-refreshing, passive check (`passive: true`), saving, target toggles and sync never
-start a Harness. Checks run outside the Library lock, with cancellation, bounded
-output, Windows `proc.Tree` cleanup and a 30-second external-probe budget per
-context (Codex/DSH share a bounded probe across their context list). No check
+[`prompt_reader.go`](../../internal/library/prompt_reader.go) reuses native/Pi
+evidence and parsed static declarations only within one read-only phase. A save
+preflights each Harness's publications before writing them, then reads fresh
+evidence for retirement; its response builds another reader. Nothing is cached
+across those mutations or requests. Per-template name matching, disablement,
+ownership and destination bytes remain checked, including the existing check
+immediately before each write or removal. Saving one template still synchronizes
+the other selected templates.
+
+First publication exposes a flushed, closed staging file without replacing a
+name claimed after the conflict check. On Windows,
+[`prompt_publish_windows.go`](../../internal/library/prompt_publish_windows.go)
+uses a same-directory `MoveFileExW` without replacement or cross-volume copying,
+avoiding the hard-link/delete sequence implicated in later replacement failures.
+Extended local and UNC paths retain long-path support. Other platforms keep
+hard-link publication. Updates to existing owned files still use the ownership
+hash check and `edit.WriteAtomic`; failures never fall back to deleting the
+destination or writing its body in place.
+
+Template states expose `deployed` independently of the native verification
+`status`. It means every owned deployment file matches the current template's
+body and invocation policy, with no known disablement or name conflict. A missing
+or invalidated process-local check cannot erase that file fact, but still blocks
+new writes through the existing status gate. Missing, unreadable or externally
+edited files, unsaved deployment changes and invalid own invocation policy never
+claim deployment. The template row lights only selected deployed targets;
+verification freshness stays in the tooltip. A stale check alone is not a row
+alarm. Other unknown-source errors still warn. The heading's installed-Harness
+controls aggregate actual deployments and retain reason, source and check time
+in their accessible descriptions. A successful inventory is labelled
+"Availability check passed", independently of whether any template selects it;
+the batch-control behavior is specified with the `harness` endpoint below.
+
+Turning the switch from off to on checks every installed supported Harness,
+including an empty library, and reports results independently. Repeating on
+does not restart checks. Adding a target checks only that Harness and the
+current template; removing a target does not start checks. New templates begin
+with no targets selected. Recheck availability forces an all-Harness check without
+requiring a template name. The check API accepts `target` for a single Harness,
+`force` to refresh successful evidence, and `passive` for read-only preflight.
+Opening the page, passive preflight, saving and sync never start native checks.
+Checks run outside the Library lock, with cancellation, bounded
+output and Windows `proc.Tree` cleanup. Pi has a 30-second external-probe budget
+per context; Codex shares 30 seconds across its context list, while DSH shares
+90 seconds for two enumerations and their source fingerprint. No check
 submits a prompt, creates an agent task or answers an authorization request.
 Extension/plugin startup can still execute code and cause external side effects;
 the warning beside the button explicitly states this is not a sandbox.
@@ -136,32 +192,146 @@ when offline Pi returns an empty list.
 [`prompt_native.go`](../../internal/library/prompt_native.go) uses Codex's original
 `app-server`: initialize, initialized and `skills/list` only. Every distinct
 home/registered-project context must return explicit skills/errors lists; loading
-errors, disabled generated skills and malformed output block deployment. Returned
-skill locations are discovered, fingerprinted, then enumerated again to avoid
-trusting an inventory whose resources changed during discovery. A CLI result
+errors, disabled generated skills and malformed output block deployment. Each
+context is enumerated once; returned skill declarations join the source stamp.
+The native inventory is the command source of truth: nested skill examples in
+assets are not independently interpreted as additional declarations. This is
+recent inventory evidence, not proof of a stable inventory across two boots. A CLI result
 never certifies Desktop interaction or implicit-invocation policy acceptance.
+Responses, notifications and server requests are distinguished by their native
+envelopes. A schema-checked `remoteControl/status/changed` notification without
+an id may pass; requests, unknown messages and `skills/changed` invalidate the
+check. Loading warnings remain blocking unless independent evidence establishes
+their effect on naming, loading and explicit-only policy. They are not silently
+discarded because a skills list arrived afterwards.
+[`prompt_codex.go`](../../internal/library/prompt_codex.go) permits only the
+complete, single-key warning for the ignored `disable_response_storage` setting
+in the current user config. Unknown, combined or detailed configuration warnings
+still block without exposing arbitrary diagnostics. A malformed `agents/openai.yaml`
+may be reported as a non-blocking notice only when its local file URI binds to a
+skill in the complete native inventory. That skill's name remains reserved. A
+notice about the template being deployed still blocks: Codex defaults a malformed
+policy to implicit discovery. The independently valid template keeps its own
+explicit-only policy. Successful states retain the notice in `reason` and its
+verified sources in `source`.
+The user configuration's `model_catalog_json` is also a source dependency:
+Codex reads relative references from its configuration directory, and a missing
+catalog can make native startup fall back to defaults. Its bytes and path
+identity therefore participate in passive invalidation even when `config.toml`
+itself has not changed.
 
 [`prompt_dsh.go`](../../internal/library/prompt_dsh.go) runs the original DeepSeek
 Harness through a separate native client in a physical temporary profile/storage
-copy. Only executable dependency directories are linked. Original config/state
+copy. The shared installation is linked, while ordinary profile-local dependency
+packages are physically copied and individual package links retain their native
+meaning. Linking the whole profile dependency directory changes the real
+importer path and can lose the native installation's peer fallback. Existing
+`compatibility.json` grants are copied with the profile; the checker never adds
+a grant. Copies and originals must retain their contents and link identities,
+and returned source paths map back to the originals. Original config/state
 are not linked or rewritten; legacy settings imports, executable YAML and
-unmappable resource/storage overrides stop before startup. The client queries
-native plugin/preset inventories and temporary sessions' commands/skills, without
-injecting a check plugin or sending a prompt. Current native `skills/list` drops
-the provider completeness flag and effective provider/resource mapping. Therefore
-a successful list, clean logs or active plugins cannot certify completeness;
-these configurations remain unverified with the uncovered providers explained.
-The adapter deliberately does not enable DSH by assuming completeness. Future
-support requires independent complete-source evidence, not a version/hash gate
-or a relaxed check.
+unmappable resource/storage overrides stop before startup. The home `.env` is
+copied as a private physical file, then the original `loadLayeredEnv` supplies
+process > project > home precedence and native bootstrap-variable restrictions.
+Each invoking context boots in its own process so one project's environment
+cannot become inherited process state for another; when home is the invoking
+directory it remains one native project layer. Rejected bootstrap variables name
+only the original file and variable, never its value. The separate client calls the installation's exported
+`runProfile`, preserves the composed profile entries and every preset, and maps
+filesystem skill roots back to the original read-only resources. It queries
+`skills.snapshot` and loads each definition in acquired preset and temporary
+Agent scopes; commands come from the original registry for the actual Agent.
+No Agent input or model request is submitted by this check.
+
+Because the remote skill list drops completeness, the client verifies the
+original registry/provider classes through read-only structural capabilities.
+Missing layouts, runtime registrations, unknown providers and incomplete
+snapshots remain unverified. The original `auditStartupEntries` must accept the
+host graph; required startup failures, broken presets and inactive module rows
+reported by the native preset inventory still block verification.
+For a native module-resolution failure, the reason can name the failed plugin
+and missing dependency, after validating package-name syntax. A native missing
+named-export error also identifies the dependency and export, with bounded
+package names and an ASCII JavaScript identifier. Missing dependencies remain
+unverified. A narrowly verified optional host failure can instead accompany an
+available/enabled template as a warning: the original Entry has no Fiber, uses
+the original tree importer, and its already-started native ESM job has a rejected
+instantiation promise with that exact missing-export diagnostic. A successful
+instantiation followed by a throwing module cannot qualify, even if it throws
+the same message. Missing introspection capabilities remain blocking; the client
+never starts a replacement module job to manufacture evidence.
+The failed job's complete linked graph must have readable file/builtin sources
+and evaluation-phase requests only. Its plugin, dependencies and source aliases
+remain in the byte fingerprint. The accepted warnings are compared with commands
+and sources across both native launches, and the template state displays warnings
+from the same accepted snapshot used for its conflict check. This verifies the
+currently effective namespace, not the failed optional plugin's functionality.
+Unknown failures, runtime failures and raw startup logs are never passed through
+as nonblocking warnings.
+The complete stderr bytes must match the original startup audit's warning hash.
+The client retains startup jobs before yielding: native HMR can replace a failed
+job after readiness. Both the retained and current jobs must independently prove
+the same static-link failure, Entry identity, resolved URL, complete dependency
+graph and source bytes. The client asks the original audit to render the proven
+errors, restoring only the associated startup stacks in that text because Cordis
+can shorten stacks on another import. It never changes the Error or the logger.
+Ambiguous stacks, additional stderr and changed audit output remain blocking;
+only validated package/export names reach the template's warning fields.
+Filesystem providers must retain the original class and discovery methods;
+subclasses or per-instance method replacements cannot certify completeness.
+They contribute every native root, including empty/missing roots. The Windows ACL
+provider's temporary resources must equal the installed assets; evidence uses
+the stable installed paths, never random derived paths. The loaded ACL body and
+invocation metadata must also agree with the original packaged skill, including
+when another plugin claims the ACL provider name. Active plugin/preset
+implementations and their declared runtime dependency resources join the content
+fingerprint, including host and retained preset group implementations, wildcard
+publications and dependency resolution aliases. The native `cordis:group`
+implementation must match the original loader's exported `Group`; its owning
+package is fingerprinted.
+Preset groups come from the original runtime registry's live Fibers and their
+directly owned Entries because the composition inventory omits groups and their
+standing trees are detached from the host tree. Their actual declaring bases
+are used; configuration text is never used to guess a resolution base.
+This source collection covers live, directly owned group Fibers; it does not
+establish the state of a group whose Fiber was never created or was disposed.
+Retargeting an alias invalidates evidence even when the old physical resources
+and manifest bytes remain unchanged. Graph and registry revision must remain
+stable across each query.
+Two native enumerations must agree around the full source fingerprint, under a
+90-second probe budget. The final fingerprint must still match. Capability
+layout changes therefore block rather than falling back to a fixed command list.
+
+The Windows acceptance procedure and its practical limits are recorded in
+[harness prompt verification](../harness-prompt-verification.md).
 
 Inventories are complete-list, process-local caches, independent of the template
 name and excluded from backups/config sync. Their keys include effective launch
-and config paths, project contexts, environment and resource content fingerprints.
+and config paths, project contexts, environment and resource fingerprints.
+Codex reads declaration/configuration bytes, but records other installed files
+by path, type, size and modification time. A skill leaf contributes its
+`SKILL.md` and `agents/openai.yaml`, not its scripts or bundled assets. The
+stamp ignores empty Codex directories left after retiring managed files.
+This lighter invalidation can miss non-declaration edits preserving size and mtime;
+it does not certify future invocation. Codex evidence ignores unrelated DSH
+configuration. DSH keeps both enumerations and full-content comparison during
+active checks, then stores a lightweight declaration/source-identity stamp for
+passive reuse. Ordinary module bytes are not reread on page/save checks; module
+size or mtime changes still invalidate the result. The same metadata-preserving
+edit limitation applies. The light stamp is collected after the final deep
+comparison; it is recent evidence, not an atomic snapshot spanning that
+transition. Pi retains full-content invalidation.
 Managed, unedited template artifacts are excluded from stamps and protected by
 ownership hashes. Resource changes/read failures invalidate evidence. Fingerprints
+follow Windows junctions and symlinks with fresh component resolution and include
+their targets, so a byte-identical retarget still invalidates evidence. Broken
+required links and cycles block; absent optional dependency-resolution candidates
+retain their link identity without pretending to supply a module. A scan is
+bounded to 50,000 entries and 1 GiB of file contents read. Deep DSH verification
+includes bundled resources and the native executable. Fingerprints
 cannot cover arbitrary external inputs used by extension code. Manual checks
-always discard prior evidence; only the newest concurrent check may publish.
+with `force` discard prior evidence; targeted checks reuse successful evidence
+while its sources match. Only the newest concurrent check may publish.
 Pre/post-source mismatch discards the answer. Passive save/sync recheck sources
 and static conflicts; stale evidence blocks only that target's new deployment.
 
@@ -185,7 +355,10 @@ empty array clears them. Setup snapshots keep selections by stable template
 id and restore those selections without replacing the template text.
 
 The GUI API has `GET /api/library/prompts` and `POST` actions `check`, `save`,
-`agents` and `remove` below that path. `agents` accepts `{id, agents}`: a stable
+`agents`, `enabled`, `harness` and `remove` below that path. `enabled` requires an explicit
+boolean and changes the total switch. `checks` contains per-Harness inventory
+status independently of individual templates; completed native checks expose
+`checkedAt` as Unix milliseconds. `agents` accepts `{id, agents}`: a stable
 template id and an explicit array of target ids (an empty array turns all off;
 missing/null is rejected). `SetPromptAgents` loads the latest name and body
 under the Library lock and changes only target selections, never text or names.
@@ -194,14 +367,50 @@ individual `Result.Problems`; existing selections survive failed checks unless
 explicitly removed. Deployments still use passive conflict checks, ownership
 hashes and backups, with independent failures per target. This endpoint never
 starts a Harness. All mutations answer `part: "prompts"`, the current `PromptsView` and
-`Result`, preserving other Library sections and their unsaved drafts. No new
-persistence fields or harness adapters are involved.
+`Result`, preserving other Library sections and their unsaved drafts. The total
+switch is local persisted state; native evidence and check times are not persisted.
+
+`harness` accepts `{target, enabled}` with an explicit boolean. It changes that
+one Harness for all templates present when the request begins, including items
+hidden by search, without changing the total switch or future-template defaults.
+The total switch must already be on. Enabling checks only that Harness, reusing
+valid successful evidence, then reads the latest bodies and selections under the
+Library lock. Templates created while checking are not added to this operation.
+Usable new selections are added; existing selections are retried by the normal
+sync, and blocked items produce individual `Result.Problems`. Other Harness
+selections are retained. Disabling does not start a Harness; normal ownership
+and backup rules retire unchanged files and preserve/report external edits.
+One batch performs one prompt sync, rather than a separate mutation per template.
+An empty enabled Library requires no runtime check.
+
+The detected Harness controls sit immediately after the total switch in the
+heading and wrap at narrow widths. They toggle the current templates: partial
+deployment enables missing items, and complete deployment toggles all off.
+They are disabled while the total switch is off, the Library is empty, or a
+template write is pending. Each control shows normal color when at least one
+selected template is actually deployed, otherwise grey, with the deployed/total
+count in its hover/focus description. Only a Harness-level check failure shows
+a red dot; missing or expired evidence and individual template conflicts do not.
+Intact deployments retain their color when evidence expires. Batch problems are
+listed by Harness, template and reason, including problems from other selected
+Harnesses synchronized by the operation. A completed batch shows a green
+Harness-named start/stop message only when the returned deployment states
+confirm every template in the original operation and there are no problems.
+Partial or failed batches retain the warning background, report the actual
+completed/total count and preserve every failure. HTTP success alone does not
+prove deployment success. Enabled heading controls scale slightly and gain a
+shadow on hover or keyboard focus; pressing still shrinks them, disabled
+controls do not scale, and reduced-motion preferences disable the transition.
+Batch writes exclude row writes, deletion, switch
+changes and refreshes until the response or failure-recovery read completes.
+Searching remains available during a batch; the response preserves its value,
+focus and selection rather than returning focus from the search field to an icon.
 
 The template list reuses the skills' `.lib-find` search layout and `agentChips`
 icons, including hover/focus expansion. Search filters names and bodies on input
-using NFKC plus lowercase; Refresh and New template stay in the heading. The
-editor retains its detailed target controls. Icons light only for `enabled`
-deployment states, separately from installation-specific native verification.
+using NFKC plus lowercase; Recheck availability and New template stay in the
+heading. The editor retains its detailed target controls. Icons light for selected `deployed`
+states; while the total switch is off they show retained selections.
 The list has no permanent native-verification badge: that explanation remains
 in the icon titles and editor. Abnormal icons keep their warning dots and
 reasons; selected abnormal targets still produce Needs attention.
@@ -213,8 +422,11 @@ agent control. Reload hints describe only successfully deployed targets.
 With at least two eligible targets, All turns those targets on or off,
 leaving blocked selections alone. A selected blocked target can still be removed
 individually. Clicking an unselected blocked target explains why in the list;
-expired native checks direct the user to the editor's Check availability, without
-opening it or running extensions automatically.
+new selections trigger only their Harness's availability check, reusing valid
+successful evidence. Cancelling a selection never starts a check. Failure of an
+added target's check does not discard concurrent cancellations of other targets.
+Editor checks apply each Harness's most recently requested result, so an older
+all-Harness response cannot revoke a newer successful single-Harness selection.
 
 Each template row reuses the skills' hover/focus delete button, between the
 body and agent chips, without opening the editor. Its in-app confirmation
@@ -276,6 +488,36 @@ reading, discarding a response if a mutation answered meanwhile.
 - Skills installed together (`InstallSkills`, `InstallMarketSkill`, `AddNewSkills`, through `installFrom` and `installChange`) install each on its own. One the library lists from the same source, or a folder in the library's own skills folder holding exactly that skill's files (left by an install that stopped before the library was saved), is had already and goes in `Result.Had`. Its files are never written, so the user's edits stay. Another skill by that name, listed or only in the folder, or a folder that can't be read, is left as it is and goes in `Result.Skipped` with why. The rest are installed and named in `Result.Installed`. Only when nothing was installed or had does the change fail, with the first reason.
 
 ## Verification
+
+### Prompt template regression gate
+
+Every prompt-template fix runs the Windows-only dedicated gate using the machine's
+original installations. It builds the current source into its own isolated
+evidence directory:
+
+```powershell
+./scripts/test-prompt-templates.ps1 -ClaudeBin '<original claude.exe>' -PiCli '<original Pi cli.js>' -CodexBin '<original codex.exe>' -DSHHome '<original DSH home>' -NodeBin '<original node.exe>'
+```
+
+The existing Playwright installation must be resolvable by that Node executable;
+set `NODE_PATH` to its installed module directory if it is outside the repository.
+The gate checks this prerequisite before building and never installs dependencies.
+
+[`test-prompt-templates.ps1`](../../scripts/test-prompt-templates.ps1) runs the
+public prompt tests, Chromium/WebKit in five languages, prompt translation checks
+and all four original Harnesses against loopback models. Native acceptance must
+use the artifact produced by public Save, including editing it before invocation;
+assertions check the current body and trailing instruction, absence of the
+superseded body, and ordinary chat without the template body. Installation and
+configuration fingerprints are compared within each acceptance script's recorded
+scope. No missing Harness or skipped native acceptance counts as a pass. Stage
+results and logs are written to an isolated evidence directory. This gate does
+not run the full repository regression or claim Codex Desktop UI acceptance.
+DSH's general invocation accepts a healthy effective namespace or its verified
+optional missing-export notice; the separate optional-failure regression still
+requires that native failure and verifies it remains present during invocation.
+
+### Other Library verification
 
 ```sh
 go test -tags nogui ./internal/library ./internal/gui -run '^TestPromptTemplate' -count=1

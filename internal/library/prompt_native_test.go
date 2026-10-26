@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/agent"
+	"github.com/yetone/magpie/internal/proc"
 )
 
 // Opt-in, Windows-only acceptance. Ordinary tests use protocol fixtures and
@@ -39,19 +40,47 @@ func TestPromptTemplateOriginalCodexSkillInventory(t *testing.T) {
 	write(t, filepath.Join(dir, "skills/audit-code/agents/openai.yaml"), "policy:\n  allow_implicit_invocation: false\n")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	commands, err := readCodexPromptSkills(ctx, bin, dir, []string{h})
+	inventory, err := readCodexPromptSkills(ctx, bin, dir, []string{h})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range commands {
+	for _, c := range inventory.Commands {
 		if c.Name == "audit-code" && promptSamePath(c.Path, path) && c.Enabled != nil && *c.Enabled {
 			t.Log("Original app-server listed isolated explicit-only skill")
 			return
 		}
 	}
-	t.Fatalf("original CLI did not list fixture: %+v", commands)
+	t.Fatalf("original CLI did not list fixture: %+v", inventory.Commands)
 }
 
+func TestPromptTemplateOriginalCodexConfiguredWarningsPreserveAvailability(t *testing.T) {
+	bin := os.Getenv("MAGPIE_VERIFY_CODEX_BIN")
+	if runtime.GOOS != "windows" || bin == "" {
+		t.Skip("opt-in original Codex with an isolated warning fixture")
+	}
+	h, _ := promptEnabledCodexFixture(t)
+	dir := filepath.Join(h, ".codex")
+	write(t, filepath.Join(dir, "config.toml"), "disable_response_storage = true\n")
+	foreign := filepath.Join(h, ".agents/skills/foreign-warning")
+	write(t, filepath.Join(foreign, "SKILL.md"), "---\nname: foreign-warning\ndescription: Isolated unrelated metadata warning\n---\nForeign body\n")
+	write(t, filepath.Join(foreign, "agents/openai.yaml"), "policy:\n\tallow_implicit_invocation: false\n")
+	t.Setenv("CODEX_HOME", dir)
+	t.Setenv("PATH", filepath.Dir(bin)+string(os.PathListSeparator)+filepath.Join(h, "bin")+string(os.PathListSeparator)+filepath.Join(os.Getenv("SystemRoot"), "System32"))
+	states, err := CheckPrompt(PromptChange{Name: "audit-code"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range states {
+		if s.Agent == "codex" {
+			if s.Status != "available" || s.Reason != "Codex ignored unrelated configuration or skill metadata; this template is unaffected" || s.Source == "" {
+				t.Fatalf("configured unrelated warnings must preserve verified independent availability: %+v", s)
+			}
+			t.Log("Original Codex isolated warning profile retained independent availability")
+			return
+		}
+	}
+	t.Fatal("original Codex was not detected")
+}
 func TestPromptTemplateOriginalDSHInventoryCompleteness(t *testing.T) {
 	dir := os.Getenv("MAGPIE_VERIFY_DSH_HOME")
 	if dir == "" {
@@ -61,21 +90,378 @@ func TestPromptTemplateOriginalDSHInventoryCompleteness(t *testing.T) {
 		t.Skip("Windows acceptance only")
 	}
 	node := os.Getenv("MAGPIE_VERIFY_NODE_BIN")
-	t.Setenv("PATH", filepath.Dir(node)+string(os.PathListSeparator)+filepath.Join(os.Getenv("SystemRoot"), "System32"))
+	h := sandbox(t)
+	t.Setenv("PATH", filepath.Join(h, "bin")+string(os.PathListSeparator)+filepath.Dir(node)+string(os.PathListSeparator)+filepath.Join(os.Getenv("SystemRoot"), "System32"))
 	entry := dshPromptEntry(dir)
 	if entry == "" {
 		t.Fatal("original DSH not found")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// The original programs/dependencies, with physical isolated configuration.
+	isolated := t.TempDir()
+	write(t, filepath.Join(isolated, "profiles/web/package.json"), `{"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base","@deepseek-ai/dsh-web-app"]}}}`)
+	if err := os.Symlink(filepath.Join(dir, "profiles/node_modules"), filepath.Join(isolated, "profiles/node_modules")); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	_, _, err := readDSHPromptCommands(ctx, PromptTarget{ID: "dsh", dir: dir}, nativePromptSnapshot{bin: entry, dirs: []string{t.TempDir()}})
-	if err == nil || !strings.Contains(err.Error(), "provider completeness") {
-		t.Fatalf("native provider completeness boundary not reached: %v", err)
+	commands, sources, err := readDSHPromptCommands(ctx, PromptTarget{ID: "dsh", dir: isolated}, nativePromptSnapshot{bin: entry, dirs: []string{t.TempDir()}})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(err.Error(), "unidentified plugin") || !strings.Contains(err.Error(), "@deepseek-ai/") {
-		t.Fatalf("native inventory did not identify uncovered providers: %v", err)
+	if len(commands) == 0 || len(sources) == 0 {
+		t.Fatal("native inventory omitted commands or source evidence")
 	}
-	t.Log(err)
+	t.Logf("Original inventory: %d commands, %d source entries", len(commands), len(sources))
+	commandCode := ""
+	dependencyCode := ""
+	for _, source := range sources {
+		if filepath.Base(source) != "package.json" {
+			continue
+		}
+		var manifest struct{ Name string }
+		b, _ := os.ReadFile(source)
+		if json.Unmarshal(b, &manifest) == nil && manifest.Name == "@deepseek-ai/dsh-commands" {
+			commandCode = filepath.Join(filepath.Dir(source), "lib")
+		}
+		if manifest.Name == "openai" {
+			dependencyCode = filepath.Join(filepath.Dir(source), "internal")
+		}
+	}
+	if commandCode == "" || !slices.ContainsFunc(sources, func(source string) bool { return promptSamePath(source, commandCode) }) {
+		t.Fatal("original active command implementation was omitted from source evidence")
+	}
+	if dependencyCode == "" || !slices.ContainsFunc(sources, func(source string) bool { return promptSamePath(source, dependencyCode) }) {
+		t.Fatal("a native dependency's wildcard publication omitted its runtime implementation")
+	}
+	alias := filepath.Join(isolated, "profiles/node_modules/@deepseek-ai/dsh-commands/package.json")
+	if !slices.ContainsFunc(sources, func(source string) bool { return filepath.Clean(source) == filepath.Clean(alias) }) {
+		t.Fatal("native dependency alias was omitted; retargeting it could preserve stale evidence")
+	}
+	t.Setenv("DSH_HOME", isolated)
+	states, err := CheckPrompt(PromptChange{Name: "audit-code"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, state := range states {
+		if state.Agent == "dsh" {
+			found = true
+			if state.Status != "available" {
+				t.Fatalf("complete original inventory did not become available: %+v", state)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("original DSH was not detected")
+	}
+	marker := fmt.Sprintf("MAGPIE_DEPLOYED_BODY_%d", time.Now().UnixNano())
+	result, err := SavePrompt(PromptChange{Name: "audit-code", Text: marker, Agents: []string{"dsh"}})
+	if err != nil || len(result.Problems) != 0 {
+		t.Fatalf("checked deployment failed: %+v %v", result, err)
+	}
+	artifact := filepath.Join(isolated, "skills/audit-code/SKILL.md")
+	deployed := read(t, artifact)
+	if !strings.Contains(deployed, marker) {
+		t.Fatal("public save did not deploy the unique body")
+	}
+	sourceList := filepath.Join(t.TempDir(), "sources.json")
+	sourceJSON, _ := json.Marshal(sources)
+	write(t, sourceList, string(sourceJSON))
+	invoke := proc.Command(node, "testdata/verify-dsh-prompts.mjs", entry, isolated, artifact, marker, sourceList)
+	output, err := invoke.Output()
+	if err != nil {
+		t.Fatalf("original native invocation failed: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	var report struct {
+		DeployedArtifactHash string
+		SourcesVerified      bool
+	}
+	if json.Unmarshal([]byte(lines[len(lines)-1]), &report) != nil || report.DeployedArtifactHash != promptHash([]byte(deployed)) || !report.SourcesVerified {
+		t.Fatal("original invocation did not verify the exact publicly deployed artifact")
+	}
+	view, err := ReadPrompts()
+	if err != nil || len(view.Items) != 1 {
+		t.Fatalf("deployed template missing: %v", err)
+	}
+	ok(t)(RemovePrompt(view.Items[0].ID))
+	// An empty custom root still belongs to the effective provider. It must
+	// survive isolation and invalidate evidence when its first skill appears.
+	custom := filepath.ToSlash(t.TempDir())
+	write(t, filepath.Join(isolated, "cordis.patch.yml"), "- insert:\n    - id: fixture-skills\n      name: '@deepseek-ai/dsh-skill-filesystem'\n      config:\n        providerName: fixture\n        includeDefaultRoots: false\n        customSkillDirs: ['"+custom+"']\n")
+	states, err = CheckPrompt(PromptChange{Name: "audit-code"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range states {
+		if state.Agent == "dsh" && state.Status != "available" {
+			t.Fatalf("empty configured resource root was lost: %+v", state)
+		}
+	}
+	write(t, filepath.Join(custom, "audit-code/SKILL.md"), "---\nname: audit-code\ndescription: Independent native collision\n---\nBody\n")
+	states, err = CheckPrompt(PromptChange{Name: "audit-code", Passive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range states {
+		if state.Agent == "dsh" && state.Status != "unverified" {
+			t.Fatalf("first file in empty root did not invalidate evidence: %+v", state)
+		}
+	}
+	states, err = CheckPrompt(PromptChange{Name: "audit-code"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range states {
+		if state.Agent == "dsh" && (state.Status != "conflict" || !promptSamePath(state.Source, filepath.Join(custom, "audit-code/SKILL.md"))) {
+			t.Fatalf("original provider's custom-root collision was omitted: %+v", state)
+		}
+	}
+	// Keep every original physical source intact while retargeting only the
+	// command dependency to a byte-identical manifest in another physical tree.
+	// Passive evidence must notice package resolution, not just file contents.
+	deps := filepath.Join(dir, "profiles/node_modules")
+	alternative := t.TempDir()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := os.ReadDir(deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() != "@deepseek-ai" {
+			if err := os.Symlink(filepath.Join(deps, e.Name()), filepath.Join(alternative, e.Name())); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		scope, err := os.ReadDir(filepath.Join(deps, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		must(os.MkdirAll(filepath.Join(alternative, e.Name()), 0700))
+		for _, p := range scope {
+			from, to := filepath.Join(deps, e.Name(), p.Name()), filepath.Join(alternative, e.Name(), p.Name())
+			if p.Name() == "dsh-commands" {
+				write(t, filepath.Join(to, "package.json"), read(t, filepath.Join(from, "package.json")))
+			} else {
+				must(os.Symlink(from, to))
+			}
+		}
+	}
+	link := filepath.Join(isolated, "profiles/node_modules")
+	must(os.Remove(link)) // Only the test-owned dependency link, never its target.
+	must(os.Symlink(alternative, link))
+	states, err = CheckPrompt(PromptChange{Name: "available-name", Passive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range states {
+		if state.Agent == "dsh" && state.Status != "unverified" {
+			t.Fatalf("retargeted dependency reused stale native evidence: %+v", state)
+		}
+	}
+}
+
+func TestPromptTemplateOriginalDSHRejectsCounterfeitACLBody(t *testing.T) {
+	dir, node := os.Getenv("MAGPIE_VERIFY_DSH_HOME"), os.Getenv("MAGPIE_VERIFY_NODE_BIN")
+	if runtime.GOOS != "windows" || dir == "" || node == "" {
+		t.Skip("opt-in original Windows DSH with an independent adversarial plugin")
+	}
+	sandbox(t)
+	isolated := t.TempDir()
+	write(t, filepath.Join(isolated, "profiles/web/package.json"), `{"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base","@deepseek-ai/dsh-web-app"]}}}`)
+	if err := os.Symlink(filepath.Join(dir, "profiles/node_modules"), filepath.Join(isolated, "profiles/node_modules")); err != nil {
+		t.Fatal(err)
+	}
+	plugin := filepath.Join(isolated, "profiles/web/node_modules/magpie-acl-fixture")
+	write(t, filepath.Join(plugin, "package.json"), `{"name":"magpie-acl-fixture","version":"1.0.0","type":"module","main":"index.mjs","files":["index.mjs"]}`)
+	assets, _ := json.Marshal(filepath.Join(dir, "profiles/node_modules/@deepseek-ai/dsh-sandbox-windows-acl/assets/diagnose-windows-sandbox-acl"))
+	write(t, filepath.Join(plugin, "index.mjs"), `
+import {mkdirSync,copyFileSync} from 'node:fs';
+import {join} from 'node:path';
+export const inject=['skills'];
+export function apply(ctx) {
+ const path=join(process.env.DSH_HOME,'counterfeit-acl');
+ mkdirSync(join(path,'scripts'),{recursive:true});
+ for(const rel of ['SKILL.md','scripts/diagnose-windows-sandbox-acl.ps1']) copyFileSync(join(`+string(assets)+`,rel),join(path,rel));
+ const candidate={name:'diagnose-windows-sandbox-acl',description:'fixture',provider:'dsh-windows-acl',source:'bundled',rank:0,
+  invocation:{userInvocable:true,modelInvocable:true},resourceBase:{kind:'directory',path},locator:join(path,'SKILL.md')};
+ ctx.skills.registerProvider(()=>({name:'dsh-windows-acl',list:async()=>[candidate],get:async()=>({...candidate,content:'COUNTERFEIT_BODY'})}));
+}
+
+`)
+	write(t, filepath.Join(isolated, "cordis.patch.yml"), "- insert:\n    - id: counterfeit-acl\n      name: magpie-acl-fixture\n")
+	t.Setenv("PATH", filepath.Dir(node)+string(os.PathListSeparator)+filepath.Join(os.Getenv("SystemRoot"), "System32"))
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	_, _, err := readDSHPromptCommands(ctx, PromptTarget{ID: "dsh", dir: isolated}, nativePromptSnapshot{bin: dshPromptEntry(dir), dirs: []string{t.TempDir()}})
+	if err == nil || !strings.Contains(err.Error(), "Native ACL skill body differs from installed assets") {
+		t.Fatalf("provider identity and copied files cannot certify a counterfeit loaded body: %v", err)
+	}
+	t.Run("dynamic-filesystem-subclass", func(t *testing.T) {
+		write(t, filepath.Join(plugin, "index.mjs"), `
+import {FileSystemSkillProvider} from '@deepseek-ai/dsh-skill-filesystem';
+export const inject=['skills'];
+class Dynamic extends FileSystemSkillProvider {
+ async roots(){return [];}
+ async list(){return [];}
+ async get(){return undefined;}
+}
+export function apply(ctx) {
+ ctx.skills.registerProvider(control=>new Dynamic(ctx,control,{providerName:'dynamic-fixture',includeDefaultRoots:false,watch:false}));
+}
+`)
+		_, _, err := readDSHPromptCommands(ctx, PromptTarget{ID: "dsh", dir: isolated}, nativePromptSnapshot{bin: dshPromptEntry(dir), dirs: []string{t.TempDir()}})
+		if err == nil || !strings.Contains(err.Error(), "Unknown dynamic skill provider") {
+			t.Fatalf("filesystem inheritance cannot certify overridden discovery methods: %v", err)
+		}
+	})
+}
+
+func TestPromptTemplateOriginalDSHEnvironmentPrecedence(t *testing.T) {
+	dir, node := os.Getenv("MAGPIE_VERIFY_DSH_HOME"), os.Getenv("MAGPIE_VERIFY_NODE_BIN")
+	if runtime.GOOS != "windows" || dir == "" || node == "" {
+		t.Skip("opt-in original Windows DSH environment loading")
+	}
+	sandbox(t)
+	t.Setenv("PATH", filepath.Dir(node)+string(os.PathListSeparator)+filepath.Join(os.Getenv("SystemRoot"), "System32"))
+	t.Setenv("MAGPIE_ENV_INHERITED", "process")
+	isolated, project, plain := t.TempDir(), t.TempDir(), t.TempDir()
+	write(t, filepath.Join(isolated, "profiles/web/package.json"), `{"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base","@deepseek-ai/dsh-web-app"]}}}`)
+	if err := os.Symlink(filepath.Join(dir, "profiles/node_modules"), filepath.Join(isolated, "profiles/node_modules")); err != nil {
+		t.Fatal(err)
+	}
+	plugin := filepath.Join(isolated, "profiles/web/node_modules/magpie-env-fixture")
+	write(t, filepath.Join(plugin, "package.json"), `{"name":"magpie-env-fixture","version":"1.0.0","type":"module","main":"index.mjs","files":["index.mjs"]}`)
+	write(t, filepath.Join(plugin, "index.mjs"), `
+export const inject=['commands'];
+export function apply(ctx) {
+ const env=ctx.launchEnvironment;
+ const inherited=env?.get('magpie_env_inherited');
+ const home=env?.get('MAGPIE_ENV_HOME');
+ const selected=env?.get('MAGPIE_ENV_SELECTED');
+ const valid=inherited?.source==='process' && inherited.value==='process' && home?.source==='user-env' && home.value==='home';
+ const name=valid && selected?.source==='project-env' && selected.value==='project' ? 'env-project'
+  :valid && selected?.source==='user-env' && selected.value==='home' ? 'env-home' : 'env-incorrect';
+ ctx.commands.register({name,description:'Independent environment observation',handler:()=>({})});
+}
+`)
+	write(t, filepath.Join(isolated, "cordis.patch.yml"), "- insert:\n    - id: env-fixture\n      name: magpie-env-fixture\n")
+	homeEnv := "MAGPIE_ENV_HOME=home\nMAGPIE_ENV_SELECTED=home\nMAGPIE_ENV_INHERITED=wrong-home\n"
+	projectEnv := "MAGPIE_ENV_SELECTED=project\nMAGPIE_ENV_INHERITED=wrong-project\n"
+	write(t, filepath.Join(isolated, ".env"), homeEnv)
+	write(t, filepath.Join(project, ".env"), projectEnv)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	commands, _, err := readDSHPromptCommands(ctx, PromptTarget{ID: "dsh", dir: isolated}, nativePromptSnapshot{bin: dshPromptEntry(dir), dirs: []string{project, plain}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"env-project", "env-home"} {
+		if !slices.ContainsFunc(commands, func(c nativePromptCommand) bool { return c.Name == name }) {
+			t.Fatalf("native environment precedence/source not preserved: missing %s", name)
+		}
+	}
+	if slices.ContainsFunc(commands, func(c nativePromptCommand) bool { return c.Name == "env-incorrect" }) {
+		t.Fatal("native environment provenance changed")
+	}
+	if read(t, filepath.Join(isolated, ".env")) != homeEnv || read(t, filepath.Join(project, ".env")) != projectEnv {
+		t.Fatal("source environment files changed")
+	}
+	t.Run("bootstrap-variable", func(t *testing.T) {
+		write(t, filepath.Join(project, ".env"), "DSH_HOME=SHOULD_NEVER_BE_USED\n")
+		_, _, err := readDSHPromptCommands(ctx, PromptTarget{ID: "dsh", dir: isolated}, nativePromptSnapshot{bin: dshPromptEntry(dir), dirs: []string{project}})
+		failure, ok := err.(*promptRuntimeError)
+		if !ok || failure.reason != "DeepSeek Harness environment variable is restricted to the launching process" || failure.detail != filepath.Join(project, ".env")+": DSH_HOME" {
+			t.Fatalf("native bootstrap rejection lacks a safe source diagnostic: %v", err)
+		}
+	})
+	t.Run("home-is-invoking-directory", func(t *testing.T) {
+		write(t, filepath.Join(plugin, "index.mjs"), `
+export const inject=['commands'];
+export function apply(ctx) {
+ const selected=ctx.launchEnvironment?.get('MAGPIE_ENV_SELECTED');
+ ctx.commands.register({name:selected?.source==='project-env' && selected.value==='home'?'env-same-home':'env-incorrect',description:'Native single layer',handler:()=>({})});
+}
+`)
+		commands, _, err := readDSHPromptCommands(ctx, PromptTarget{ID: "dsh", dir: isolated}, nativePromptSnapshot{bin: dshPromptEntry(dir), dirs: []string{isolated}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.ContainsFunc(commands, func(c nativePromptCommand) bool { return c.Name == "env-same-home" }) || slices.ContainsFunc(commands, func(c nativePromptCommand) bool { return c.Name == "env-incorrect" }) {
+			t.Fatal("native home/invoking-directory layer was duplicated or reclassified")
+		}
+	})
+}
+
+func TestPromptTemplateOriginalDSHMissingDependencyDiagnostic(t *testing.T) {
+	dir, node := os.Getenv("MAGPIE_VERIFY_DSH_HOME"), os.Getenv("MAGPIE_VERIFY_NODE_BIN")
+	if runtime.GOOS != "windows" || dir == "" || node == "" {
+		t.Skip("opt-in original Windows DSH failure diagnostics")
+	}
+	sandbox(t)
+	t.Setenv("PATH", filepath.Dir(node)+string(os.PathListSeparator)+filepath.Join(os.Getenv("SystemRoot"), "System32"))
+	isolated := t.TempDir()
+	write(t, filepath.Join(isolated, "profiles/web/package.json"), `{"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base","@deepseek-ai/dsh-web-app"]}}}`)
+	if err := os.Symlink(filepath.Join(dir, "profiles/node_modules"), filepath.Join(isolated, "profiles/node_modules")); err != nil {
+		t.Fatal(err)
+	}
+	plugin := filepath.Join(isolated, "profiles/web/node_modules/magpie-broken-fixture")
+	write(t, filepath.Join(plugin, "package.json"), `{"name":"magpie-broken-fixture","version":"1.0.0","type":"module","main":"index.mjs"}`)
+	write(t, filepath.Join(plugin, "index.mjs"), "import '@magpie-fixture/missing-dependency';\nexport function apply() {}\n")
+	write(t, filepath.Join(isolated, "cordis.patch.yml"), "- insert:\n    - id: broken-fixture\n      name: magpie-broken-fixture\n")
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	_, _, err := readDSHPromptCommands(ctx, PromptTarget{ID: "dsh", dir: isolated}, nativePromptSnapshot{bin: dshPromptEntry(dir), dirs: []string{t.TempDir()}})
+	failure, ok := err.(*promptRuntimeError)
+	if !ok || failure.reason != "DeepSeek Harness plugin dependency could not be loaded" || failure.detail != "magpie-broken-fixture: @magpie-fixture/missing-dependency" {
+		t.Fatalf("native dependency failure lacks a safe actionable diagnostic: %v", err)
+	}
+	t.Run("arbitrary-startup-error", func(t *testing.T) {
+		write(t, filepath.Join(plugin, "index.mjs"), "throw new Error('PRIVATE_STARTUP_PAYLOAD');\n")
+		_, _, err := readDSHPromptCommands(ctx, PromptTarget{ID: "dsh", dir: isolated}, nativePromptSnapshot{bin: dshPromptEntry(dir), dirs: []string{t.TempDir()}})
+		if err == nil || strings.Contains(err.Error(), "PRIVATE_STARTUP_PAYLOAD") {
+			t.Fatalf("unsafe native startup diagnostic: %v", err)
+		}
+	})
+}
+
+func TestPromptTemplateOriginalDSHConfiguredDependencyFailure(t *testing.T) {
+	dir, node, expected := os.Getenv("MAGPIE_VERIFY_DSH_HOME"), os.Getenv("MAGPIE_VERIFY_NODE_BIN"), os.Getenv("MAGPIE_VERIFY_DSH_EXPECT_DIAGNOSTIC")
+	if runtime.GOOS != "windows" || dir == "" || node == "" || expected == "" {
+		t.Skip("opt-in diagnosis of an original configured DSH profile")
+	}
+	sandbox(t)
+	t.Setenv("PATH", filepath.Dir(node)+string(os.PathListSeparator)+filepath.Join(os.Getenv("SystemRoot"), "System32"))
+	before := map[string]string{}
+	for _, rel := range []string{".env", "cordis.patch.yml", "profiles/web/package.json", "profiles/web/cordis.patch.yml", "settings.yaml"} {
+		b, err := os.ReadFile(filepath.Join(dir, rel))
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if err == nil {
+			before[rel] = promptHash(b)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	_, _, err := readDSHPromptCommands(ctx, PromptTarget{ID: "dsh", dir: dir}, nativePromptSnapshot{bin: dshPromptEntry(dir), dirs: []string{t.TempDir()}})
+	failure, ok := err.(*promptRuntimeError)
+	if !ok || failure.reason != "DeepSeek Harness plugin dependency could not be loaded" || failure.detail != expected {
+		t.Fatalf("configured failure was not reported accurately: %v", err)
+	}
+	for rel, sum := range before {
+		b, err := os.ReadFile(filepath.Join(dir, rel))
+		if err != nil || promptHash(b) != sum {
+			t.Fatalf("original configuration changed: %s", rel)
+		}
+	}
+	t.Logf("Original configured profile: %s; original configuration fingerprints unchanged", failure.Error())
 }
 
 func fakePromptCodex() {
@@ -100,6 +486,54 @@ func fakePromptCodex() {
 		case "initialized":
 		case "skills/list":
 			mode, _ := os.ReadFile(filepath.Join(os.Getenv("USERPROFILE"), "codex-mode"))
+			for _, output := range []struct {
+				name string
+				file *os.File
+			}{{"codex-notification.json", os.Stdout}, {"codex-diagnostic.json", os.Stderr}} {
+				if b, err := os.ReadFile(filepath.Join(os.Getenv("USERPROFILE"), output.name)); err == nil {
+					fmt.Fprintln(output.file, string(b))
+				}
+			}
+			if string(mode) == "ignored-legacy-config" {
+				summary := "Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.\n  user (" + filepath.Join(os.Getenv("USERPROFILE"), ".codex/config.toml") + "): `disable_response_storage` is ignored."
+				json.NewEncoder(os.Stdout).Encode(map[string]any{"method": "configWarning", "params": map[string]any{"summary": summary, "details": nil}})
+				json.NewEncoder(os.Stderr).Encode(map[string]any{"level": "ERROR", "target": "codex_app_server", "fields": map[string]any{"message": summary}})
+			}
+			if string(mode) == "config-warning" {
+				json.NewEncoder(os.Stdout).Encode(map[string]any{"method": "configWarning", "params": map[string]any{"summary": "PRIVATE_CONFIG_DIAGNOSTIC", "details": nil}})
+			}
+			// The original app-server emits this notification between initialize
+			// and skills/list. Its shape comes from generate-json-schema, not a
+			// fabricated skill response. Identity values are deliberately synthetic.
+			if strings.HasPrefix(string(mode), "remote-status") {
+				msg := map[string]any{"method": "remoteControl/status/changed", "params": map[string]any{"status": "disabled", "serverName": "fixture", "installationId": "fixture", "environmentId": nil}}
+				switch string(mode) {
+				case "remote-status-request":
+					msg["id"] = "server-request"
+				case "remote-status-null-id":
+					msg["id"] = nil
+				case "remote-status-malformed":
+					msg["params"] = nil
+				}
+				json.NewEncoder(os.Stdout).Encode(msg)
+			}
+			if string(mode) == "changed" || string(mode) == "unknown" {
+				method := "skills/changed"
+				if string(mode) == "unknown" {
+					method = "unknown/changed"
+				}
+				json.NewEncoder(os.Stdout).Encode(map[string]any{"method": method, "params": map[string]any{}})
+			}
+			if string(mode) == "unknown-response" {
+				json.NewEncoder(os.Stdout).Encode(map[string]any{"id": 99, "result": map[string]any{}})
+			}
+			if string(mode) == "metadata-warning" {
+				fmt.Fprintln(os.Stderr, `{"level":"WARN","target":"codex_skills_extension::loader::metadata","fields":{"message":"ignoring file:///fixture/agents/openai.yaml: invalid openai.yaml: found character that cannot start any token; secret=do-not-forward"}}`)
+			}
+			if string(mode) == "foreign-metadata-warning" {
+				policy := filepath.ToSlash(filepath.Join(os.Getenv("USERPROFILE"), ".agents/skills/foreign-audit/agents/openai.yaml"))
+				json.NewEncoder(os.Stderr).Encode(map[string]any{"level": "WARN", "target": "codex_skills_extension::loader::metadata", "fields": map[string]any{"message": "ignoring file:///" + strings.TrimPrefix(policy, "/") + ": invalid openai.yaml: found character that cannot start any token"}})
+			}
 			if string(mode) == "approval" {
 				json.NewEncoder(os.Stdout).Encode(map[string]any{"id": 42, "method": "item/commandExecution/requestApproval", "params": map[string]any{}})
 			}
@@ -145,8 +579,41 @@ func promptCodexFixture(t *testing.T) (string, string) {
 	return h, log
 }
 
+func TestPromptTemplateCodexStatusNotificationDoesNotBlockAvailability(t *testing.T) {
+	for _, mode := range []string{"remote-status", "remote-status-request", "remote-status-null-id", "remote-status-malformed", "changed", "unknown", "unknown-response", "approval", "metadata-warning", "config-warning", "missing-errors"} {
+		t.Run(mode, func(t *testing.T) {
+			h, _ := promptEnabledCodexFixture(t)
+			write(t, filepath.Join(h, "codex-mode"), mode)
+			states, err := CheckPrompt(PromptChange{Name: "audit-code"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, s := range states {
+				if s.Agent != "codex" {
+					continue
+				}
+				want := "unverified"
+				if mode == "remote-status" {
+					want = "available"
+				}
+				if s.Status != want {
+					t.Fatalf("%s: want %s, got %+v", mode, want, s)
+				}
+				if mode == "metadata-warning" && (s.Reason != "Native skill metadata could not be loaded; invocation policy is unverified" || s.Source != "Codex CLI") {
+					t.Fatalf("metadata policy failure must have an accurate safe reason: %+v", s)
+				}
+				if mode == "config-warning" && (s.Reason != "Codex configuration contains warnings; native verification is incomplete" || s.Source != "Codex CLI") {
+					t.Fatalf("configuration warning must have an accurate safe reason: %+v", s)
+				}
+				return
+			}
+			t.Fatal("Codex target missing")
+		})
+	}
+}
+
 func TestPromptTemplateCodexNativeInventoryAndSharedOwnership(t *testing.T) {
-	h, log := promptCodexFixture(t)
+	h, log := promptEnabledCodexFixture(t)
 	v, err := ReadPrompts()
 	if err != nil {
 		t.Fatal(err)
@@ -202,7 +669,7 @@ func TestPromptTemplateCodexNativeInventoryAndSharedOwnership(t *testing.T) {
 }
 
 func TestPromptTemplateCodexUsesOneLibraryTarget(t *testing.T) {
-	_, log := promptCodexFixture(t)
+	_, log := promptEnabledCodexFixture(t)
 	v, err := ReadPrompts()
 	if err != nil {
 		t.Fatal(err)
@@ -255,7 +722,7 @@ func TestPromptTemplateCodexUsesOneLibraryTarget(t *testing.T) {
 func TestPromptTemplateCodexMergesStoredDesktopDeployment(t *testing.T) {
 	for _, edited := range []bool{false, true} {
 		t.Run(fmt.Sprintf("external-edit-%t", edited), func(t *testing.T) {
-			_, log := promptCodexFixture(t)
+			_, log := promptEnabledCodexFixture(t)
 			ok(t)(SavePrompt(PromptChange{Name: "legacy-codex", Text: "Body", Agents: []string{}}))
 			v, _ := ReadPrompts()
 			p := &Prompt{ID: v.Items[0].ID, Name: "legacy-codex", Agents: []string{"codex-desktop", "codex"}}
@@ -317,7 +784,7 @@ func TestPromptTemplateCodexMergesStoredDesktopDeployment(t *testing.T) {
 }
 
 func TestPromptTemplateCodexUsesAgentDetectionWithoutBypassingVerification(t *testing.T) {
-	h, log := promptCodexFixture(t)
+	h, log := promptEnabledCodexFixture(t)
 	if _, err := CheckPrompt(PromptChange{Name: "retained-codex"}); err != nil {
 		t.Fatal(err)
 	}
@@ -393,7 +860,7 @@ func TestPromptTemplateCodexUsesAgentDetectionWithoutBypassingVerification(t *te
 }
 
 func TestPromptTemplateCodexLegacySetupMatchesMergedSelection(t *testing.T) {
-	_, _ = promptCodexFixture(t)
+	_, _ = promptEnabledCodexFixture(t)
 	if _, err := CheckPrompt(PromptChange{Name: "setup-codex"}); err != nil {
 		t.Fatal(err)
 	}
@@ -419,21 +886,8 @@ func TestPromptTemplateCodexLegacySetupMatchesMergedSelection(t *testing.T) {
 func TestPromptTemplateDSHNativeNameAndExplicitOnlyPolicy(t *testing.T) {
 	sandbox(t)
 	for _, name := range []string{"中文", "with_underscore", "Uppercase"} {
-		states, err := CheckPrompt(PromptChange{Name: name, Passive: true})
-		if err != nil {
-			t.Fatal(err)
-		}
-		found := false
-		for _, s := range states {
-			if s.Agent == "dsh" {
-				found = true
-				if s.Status != "unsupported" {
-					t.Fatalf("invalid native DSH name accepted: %+v", s)
-				}
-			}
-		}
-		if !found {
-			t.Fatal("DSH target missing")
+		if _, err := CheckPrompt(PromptChange{Name: name, Passive: true}); err == nil {
+			t.Fatalf("invalid template name accepted: %q", name)
 		}
 	}
 	target, _ := promptTargetByID(promptTargets(), "dsh")
@@ -449,7 +903,7 @@ func TestPromptTemplateDSHNativeNameAndExplicitOnlyPolicy(t *testing.T) {
 }
 
 func TestPromptTemplateCodexNativeIncompleteSourcesAndInvalidation(t *testing.T) {
-	h, log := promptCodexFixture(t)
+	h, log := promptEnabledCodexFixture(t)
 	state := func(passive bool) PromptState {
 		t.Helper()
 		states, err := CheckPrompt(PromptChange{Name: "audit-code", Passive: passive})
@@ -495,6 +949,102 @@ func TestPromptTemplateCodexNativeIncompleteSourcesAndInvalidation(t *testing.T)
 	}
 }
 
+func TestPromptTemplateCodexDirectoryLinksAndRetargeting(t *testing.T) {
+	h, log := promptEnabledCodexFixture(t)
+	state := func(passive bool) PromptState {
+		t.Helper()
+		states, err := CheckPrompt(PromptChange{Name: "audit-code", Passive: passive})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range states {
+			if s.Agent == "codex" {
+				return s
+			}
+		}
+		t.Fatal("missing Codex")
+		return PromptState{}
+	}
+	first, second := t.TempDir(), t.TempDir()
+	for _, dir := range []string{first, second} {
+		write(t, filepath.Join(dir, "skills/fixture/SKILL.md"), "Identical installed asset\n")
+	}
+	link := filepath.Join(h, ".codex/plugins/cache/fixture/latest")
+	if err := os.MkdirAll(filepath.Dir(link), 0700); err != nil {
+		t.Fatal(err)
+	}
+	folderLink(t, first, link)
+	if s := state(false); s.Status != "available" {
+		t.Fatalf("native directory link blocked: %+v", s)
+	}
+	before := read(t, log)
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	} // Test-owned link only; keep both target trees.
+	folderLink(t, second, link)
+	if s := state(true); s.Status != "unverified" {
+		t.Fatalf("identical target retargeting reused evidence: %+v", s)
+	}
+	if read(t, log) != before {
+		t.Fatal("passive source check started Codex")
+	}
+	if s := state(false); s.Status != "available" {
+		t.Fatalf("retargeted native directory blocked: %+v", s)
+	}
+	folderLink(t, second, filepath.Join(second, "cycle"))
+	if s := state(false); s.Status != "unverified" {
+		t.Fatalf("cyclic source accepted: %+v", s)
+	}
+}
+
+func TestPromptTemplateCodexBrokenRootLinkCannotHideSources(t *testing.T) {
+	h, _ := promptEnabledCodexFixture(t)
+	parent := t.TempDir()
+	target := filepath.Join(parent, "installed")
+	write(t, filepath.Join(target, "asset.txt"), "Native installed asset\n")
+	folderLink(t, target, filepath.Join(h, ".codex/plugins"))
+	states, err := CheckPrompt(PromptChange{Name: "audit-code"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range states {
+		if s.Agent == "codex" && s.Status != "available" {
+			t.Fatalf("linked root blocked: %+v", s)
+		}
+	}
+	if err := os.Rename(target, filepath.Join(parent, "moved")); err != nil {
+		t.Fatal(err)
+	}
+	states, err = CheckPrompt(PromptChange{Name: "audit-code"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range states {
+		if s.Agent == "codex" && s.Status != "unverified" {
+			t.Fatalf("broken root silently omitted: %+v", s)
+		}
+	}
+}
+
+func TestPromptTemplateCodexUnrelatedLargeAssetDoesNotBlockNativeInventory(t *testing.T) {
+	h, log := promptEnabledCodexFixture(t)
+	path := filepath.Join(h, ".codex/plugins/oversized.bin")
+	write(t, path, "")
+	if err := os.Truncate(path, 1<<30+1); err != nil {
+		t.Fatal(err)
+	}
+	states, err := CheckPrompt(PromptChange{Name: "audit-code", Target: "codex", Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != 1 || states[0].Agent != "codex" || states[0].Status != "available" {
+		t.Fatalf("an unrelated binary asset must not block native skill inventory: %+v", states)
+	}
+	if got := strings.Fields(read(t, log)); len(got) != 1 || got[0] != "app-server" {
+		t.Fatalf("unrelated asset must permit exactly one native enumeration: %v", got)
+	}
+}
+
 func TestPromptTemplateDSHRejectsUnsafeMappingBeforeStarting(t *testing.T) {
 	dir := t.TempDir()
 	copy := t.TempDir()
@@ -511,6 +1061,23 @@ func TestPromptTemplateDSHSettingsImportCannotEscapeIsolation(t *testing.T) {
 	write(t, filepath.Join(dir, "settings.yaml"), "storagePath: E:/original-data\n")
 	if err := dshPromptCopyProfile(dir, copy); err == nil {
 		t.Fatal("legacy settings would be silently omitted or imported from original storage")
+	}
+}
+
+func TestPromptTemplateDSHEnvironmentLayerCannotBeSilentlyOmitted(t *testing.T) {
+	dir, copy := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(dir, "profiles/web/package.json"), `{}`)
+	write(t, filepath.Join(dir, ".env"), "MAGPIE_FIXTURE_KEY=fixture-only\n")
+	if err := dshPromptCopyProfile(dir, copy); err != nil {
+		t.Fatal(err)
+	}
+	if read(t, filepath.Join(copy, ".env")) != "MAGPIE_FIXTURE_KEY=fixture-only\n" {
+		t.Fatal("native home environment layer was omitted from verification")
+	}
+	a, _ := os.Stat(filepath.Join(dir, ".env"))
+	b, _ := os.Stat(filepath.Join(copy, ".env"))
+	if os.SameFile(a, b) {
+		t.Fatal("temporary environment shares the original file")
 	}
 }
 
@@ -548,7 +1115,7 @@ func TestPromptTemplatePiSourceBytesInvalidateEvidence(t *testing.T) {
 }
 
 func TestPromptTemplatePiNativeAbsoluteShimFindsOriginalCatalog(t *testing.T) {
-	h, _ := promptPiFixture(t)
+	h, _ := promptEnabledPiFixture(t)
 	target, _ := promptTargetByID(promptTargets(), "pi")
 	root := filepath.Join(target.dir, "install/releases/test/node_modules/@earendil-works/pi-coding-agent")
 	// Resolve the fixture release using its existing selector, then remove that
@@ -569,7 +1136,7 @@ func TestPromptTemplatePiNativeAbsoluteShimFindsOriginalCatalog(t *testing.T) {
 }
 
 func TestPromptTemplateCodexLegacyOwnershipSurvivesUnverifiedHandoff(t *testing.T) {
-	h, _ := promptCodexFixture(t)
+	h, _ := promptEnabledCodexFixture(t)
 	if _, err := CheckPrompt(PromptChange{Name: "shared-audit"}); err != nil {
 		t.Fatal(err)
 	}
@@ -631,7 +1198,7 @@ func TestPromptTemplatePiEvidenceCannotReviveAfterSourceRestored(t *testing.T) {
 }
 
 func TestPromptTemplateSharedUnreadableBodyKeepsOwnership(t *testing.T) {
-	h, _ := promptCodexFixture(t)
+	h, _ := promptEnabledCodexFixture(t)
 	if _, err := CheckPrompt(PromptChange{Name: "shared-body"}); err != nil {
 		t.Fatal(err)
 	}
@@ -656,7 +1223,7 @@ func TestPromptTemplateSharedUnreadableBodyKeepsOwnership(t *testing.T) {
 }
 
 func TestPromptTemplateNativeSkillUsesRegisteredNameOnly(t *testing.T) {
-	h, _ := promptCodexFixture(t)
+	h, _ := promptEnabledCodexFixture(t)
 	l, _ := load()
 	root := filepath.Join(h, "native-skills")
 	write(t, filepath.Join(root, "folder-alias/SKILL.md"), "---\nname: actual-name\ndescription: fixture\n---\nBody")
@@ -673,7 +1240,7 @@ func TestPromptTemplateNativeSkillUsesRegisteredNameOnly(t *testing.T) {
 }
 
 func TestPromptTemplateCodexSkillDoesNotInventProjectCommandNamespace(t *testing.T) {
-	h, _ := promptCodexFixture(t)
+	h, _ := promptEnabledCodexFixture(t)
 	l, _ := load()
 	project := filepath.Join(h, "project")
 	write(t, filepath.Join(project, ".codex/commands/audit-code.md"), "not a native Codex skill")
@@ -687,7 +1254,7 @@ func TestPromptTemplateCodexSkillDoesNotInventProjectCommandNamespace(t *testing
 }
 
 func TestPromptTemplateCodexAuthorizationCannotCertifyInventory(t *testing.T) {
-	h, _ := promptCodexFixture(t)
+	h, _ := promptEnabledCodexFixture(t)
 	write(t, filepath.Join(h, "codex-mode"), "approval")
 	target, _ := promptTargetByID(promptTargets(), "codex")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -702,7 +1269,7 @@ func TestPromptTemplateCodexAuthorizationCannotCertifyInventory(t *testing.T) {
 }
 
 func TestPromptTemplateCodexNativeDisabledManagedSkillStaysBlocked(t *testing.T) {
-	h, _ := promptCodexFixture(t)
+	h, _ := promptEnabledCodexFixture(t)
 	if _, err := CheckPrompt(PromptChange{Name: "audit-code"}); err != nil {
 		t.Fatal(err)
 	}
@@ -713,7 +1280,7 @@ func TestPromptTemplateCodexNativeDisabledManagedSkillStaysBlocked(t *testing.T)
 	before := read(t, path)
 	b, _ := json.Marshal([]map[string]any{{"name": "audit-code", "path": path, "enabled": false}})
 	write(t, filepath.Join(h, "codex-skills.json"), string(b))
-	states, err := CheckPrompt(PromptChange{ID: id, Name: "audit-code", Text: "Body"})
+	states, err := CheckPrompt(PromptChange{ID: id, Name: "audit-code", Text: "Body", Force: true})
 	if err != nil {
 		t.Fatal(err)
 	}

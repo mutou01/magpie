@@ -21,7 +21,7 @@ func checkCarriedPrompts(ps []CarriedPrompt) error {
 		if err := checkName("prompt id", p.ID); err != nil {
 			return err
 		}
-		if err := checkPromptName(p.Name); err != nil {
+		if err := checkStoredPromptName(p.Name); err != nil {
 			return err
 		}
 		if ids[p.ID] || names[promptKey(p.Name)] {
