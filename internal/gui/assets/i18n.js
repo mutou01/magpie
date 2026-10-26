@@ -6,6 +6,10 @@ const I18N = {
   zh: {
     "Availability check passed": "可用性检查通过",
     "Enabled {n}/{total} templates": "已启用 {n}/{total} 个模板",
+    "Disabled {n}/{total} templates": "已停用 {n}/{total} 个模板",
+    "{name} started": "{name}启动",
+    "{name} stopped": "{name}停用",
+    "Some templates did not reach the requested state": "部分模板未达到请求的状态",
     "Enable all current templates": "启用当前全部模板",
     "Disable all current templates": "停用当前全部模板",
     "Prompt templates": "提示词模板",
@@ -3989,6 +3993,10 @@ const I18N = {
   "zh-TW": {
     "Availability check passed": "可用性檢查通過",
     "Enabled {n}/{total} templates": "已啟用 {n}/{total} 個範本",
+    "Disabled {n}/{total} templates": "已停用 {n}/{total} 個範本",
+    "{name} started": "{name}啟動",
+    "{name} stopped": "{name}停用",
+    "Some templates did not reach the requested state": "部分範本未達到要求的狀態",
     "Enable all current templates": "啟用目前全部範本",
     "Disable all current templates": "停用目前全部範本",
     "Prompt templates": "提示詞範本",
@@ -7957,6 +7965,10 @@ const I18N = {
   ja: {
     "Availability check passed": "利用可否の確認に成功",
     "Enabled {n}/{total} templates": "{n}/{total} 件のテンプレートが有効",
+    "Disabled {n}/{total} templates": "{n}/{total} 件のテンプレートが無効",
+    "{name} started": "{name}を有効化",
+    "{name} stopped": "{name}を無効化",
+    "Some templates did not reach the requested state": "一部のテンプレートが要求された状態になっていません",
     "Enable all current templates": "現在のすべてのテンプレートを有効化",
     "Disable all current templates": "現在のすべてのテンプレートを無効化",
     "Prompt templates": "プロンプトテンプレート",
@@ -11927,6 +11939,10 @@ const I18N = {
   de: {
     "Availability check passed": "Verfügbarkeitsprüfung bestanden",
     "Enabled {n}/{total} templates": "{n}/{total} Vorlagen aktiviert",
+    "Disabled {n}/{total} templates": "{n}/{total} Vorlagen deaktiviert",
+    "{name} started": "{name} aktiviert",
+    "{name} stopped": "{name} deaktiviert",
+    "Some templates did not reach the requested state": "Einige Vorlagen haben den angeforderten Zustand nicht erreicht",
     "Enable all current templates": "Alle aktuellen Vorlagen aktivieren",
     "Disable all current templates": "Alle aktuellen Vorlagen deaktivieren",
     "Prompt templates": "Prompt-Vorlagen",

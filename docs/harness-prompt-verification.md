@@ -662,6 +662,63 @@ directory retain the commands, outputs and hashes. No acceptance process was
 left running. Native acceptance was Windows-only; Linux evidence is static and
 cross-build only. No full-repository regression was run.
 
+## Harness batch feedback and interaction (2026-10-26)
+
+Batch completion now uses the existing skill-style success/warning status.
+Green feedback names the Harness (Chinese: `Pi启动`) only when every template
+captured at the start has a returned state confirming the requested deployment
+or removal and the operation has no problems. Partial or failed operations keep
+the warning background, report the actual completed/total count and list each
+problem's Harness, template and reason. An omitted template cannot shrink the
+operation total; a missing target state cannot prove removal.
+
+The original client treated HTTP success separately from deployment success but
+did not supply a Harness-named success message or completion count. Source
+tracing also showed that a target batch can synchronize another selected
+Harness and return its genuine problem. A public regression verifies successful
+Codex deployment alongside expired Pi evidence, with the retained Pi artifact
+unchanged and no Pi process started. Such a problem remains visible and is
+attributed to Pi; it is not converted into success.
+
+Browser tests first failed on the generic success text, missing completion
+count and absent hover emphasis. Additional red tests caught a response omitting
+an original template and removal without a returned target state. After the
+fix, all four prompt browser files passed 158/158 tests, with zero failures or
+skips, in 119.49 seconds across Chromium/WebKit and five languages. Coverage
+includes complete and partial enable/disable, HTTP success without deployment,
+cross-Harness errors, hover/focus shadow and scale, pressed shrink, disabled
+controls and reduced-motion transitions. The full i18n check passed 5/5.
+Red/green logs are retained under
+`C:/Users/Administrator/AppData/Local/Temp/magpie-prompt-reader-final-gate/`
+(`harness-status-hover-four-files-green.log`, `harness-status-hover-i18n.log`
+and the corresponding targeted red logs).
+
+The original Pi acceptance client now also disables and re-enables through the
+public batch route after Edit Save, requires zero Pi problems and verifies the
+exact same edited artifact before native invocation. This path passed in the
+final dedicated gate, including actual deployment, native body/tail expansion
+and the ordinary-chat negative control.
+
+The final single dedicated-gate invocation exited zero with all eight stages
+passing: build 6.76s, public API 338.16s, dual-engine five-language UI 118.44s,
+translations 0.16s, original Claude 3.29s, Pi 5.85s, Codex 12.66s and DSH 184.80s.
+Public tests recorded 190 passes, zero failures and 33 native opt-in skips;
+the mandatory four original-Harness stages all actually executed and passed.
+UI recorded 158 passes and zero skips. DSH retained its original optional-plugin
+warning and the minimal preset's unsupported native skill invocation; the other
+three presets expanded the body/tail and blocked model-requested loading.
+
+All 1,140 production-source fingerprints and 15 selected original program/config
+fingerprints (Claude/Pi/Codex/DSH: 3/3/4/5) were unchanged during acceptance.
+This is not a whole-installation audit. Syntax, formatting and final diff checks
+passed. Evidence is retained under
+`C:/Users/Administrator/AppData/Local/Temp/magpie-prompt-harness-feedback-final-20261026/`
+(`stages.json`, `final-proof.json`, source snapshots and original-file summaries).
+The tested binary SHA256 is
+`87EE1A415BD6F518A4016F879B6C28A4D3DA144561C30AD2236C104049B19B6C`.
+Original invocation acceptance was Windows-only with loopback models; no
+full-repository regression was run.
+
 ## Reproduce opt-in native checks
 
 Use the installed paths from the machine under test, without changing its files:

@@ -5,6 +5,12 @@
 .lib-prompts > .lib-aside { padding: 0 12px; }
 .lib-prompts .lib-prompt-checks { max-width: none; justify-content: flex-start; }
 .lib-prompt-checks .lib-prompt-harness-check.warn::after { background: var(--red); }
+.lib-prompt-checks .lib-prompt-harness-check { transition: background .14s, border-color .14s, color .14s, transform .14s var(--ease), box-shadow .14s; }
+.lib-prompt-checks .lib-prompt-harness-check:not(:disabled):is(:hover, :focus-visible) { transform: scale(1.08); box-shadow: 0 3px 8px rgba(0, 0, 0, .14); z-index: 1; }
+.lib-prompt-checks .lib-prompt-harness-check:not(:disabled):active { transform: scale(.92); }
+@media (prefers-reduced-motion: reduce) {
+  .lib-prompt-checks .lib-prompt-harness-check { transition: none; }
+}
 .lib-prompt-finder { margin: 10px 12px; }
 .lib-prompt-editor textarea.lib-prompt-text { min-height: 150px; resize: vertical; }
 .lib-prompt-row .lib-tags:empty { display: none; }

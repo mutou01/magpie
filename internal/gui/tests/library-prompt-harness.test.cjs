@@ -31,7 +31,7 @@ async function fixture(t, engine, lang) {
     checks: targets.map(a => ({ agent: a.id, status: "available", reason: "fixture native check passed" })),
     targets,
   };
-  let held, release, problems = [], loseResponse = false, readStarted, releaseRead;
+  let held, release, problems = [], loseResponse = false, readStarted, releaseRead, undeployed, omitted, omitState = false;
   const view = () => structuredClone(state);
   await ctx.addInitScript(() => localStorage.setItem("magpie.libTab", "instructions"));
   await page.route("**/*", async route => {
@@ -53,11 +53,12 @@ async function fixture(t, engine, lang) {
       if (p.endsWith("/harness")) {
         if (held) { held(); held = undefined; await new Promise(resolve => { release = resolve; }); }
         for (const item of state.items) {
-          if (problems.some(problem => problem.what === `prompt:${item.name}`)) continue;
+          if (problems.some(problem => problem.agent === body.target && problem.what === `prompt:${item.name}`)) continue;
           item.agents = item.agents.filter(a => a !== body.target);
           if (body.enabled) item.agents.push(body.target);
           item.states = item.states.filter(s => s.agent !== body.target);
-          item.states.push({ agent: body.target, status: body.enabled ? "enabled" : "available", deployed: body.enabled });
+          const deployed = body.enabled && item.id !== undeployed;
+          if (!omitState) item.states.push({ agent: body.target, status: deployed ? "enabled" : "available", deployed });
         }
         if (loseResponse) { loseResponse = false; return route.abort("failed"); }
       }
@@ -68,7 +69,9 @@ async function fixture(t, engine, lang) {
       }
       if (p.endsWith("/enabled")) state.enabled = body.enabled;
       if (p.endsWith("/check")) return route.fulfill({ json: state.checks });
-      return route.fulfill({ json: { part: "prompts", prompts: view(), result: { changed: [], problems } } });
+      const prompts = view();
+      if (p.endsWith("/harness")) prompts.items = prompts.items.filter(item => item.id !== omitted);
+      return route.fulfill({ json: { part: "prompts", prompts, result: { changed: [], problems } } });
     }
     if (p.startsWith("/api/")) return route.fulfill({ json: p === "/api/usage/quotas" ? [] : {} });
     const file = path.join(assets, p === "/" ? "index.html" : p);
@@ -83,7 +86,7 @@ async function fixture(t, engine, lang) {
   t.after(() => release?.());
   t.after(() => releaseRead?.());
   await open();
-  return { page, state, sent, open, icon: id => page.locator(`.lib-prompt-harness-check[data-agent="${id}"]`), hold: () => new Promise(resolve => { held = resolve; }), release: () => release?.(), fail: value => { problems = value; }, loseResponse: () => { loseResponse = true; }, holdRecovery: () => new Promise(resolve => { readStarted = resolve; }), releaseRecovery: () => releaseRead?.() };
+  return { page, state, sent, open, icon: id => page.locator(`.lib-prompt-harness-check[data-agent="${id}"]`), hold: () => new Promise(resolve => { held = resolve; }), release: () => release?.(), fail: value => { problems = value; }, undeployed: id => { undeployed = id; }, omitFromReply: id => { omitted = id; }, omitState: () => { omitState = true; }, loseResponse: () => { loseResponse = true; }, holdRecovery: () => new Promise(resolve => { readStarted = resolve; }), releaseRecovery: () => releaseRead?.() };
 }
 
 async function started(promise) {
@@ -93,6 +96,120 @@ async function started(promise) {
 }
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) for (const lang of languages) {
+  test(`${engine}: ${lang}: overview bulk completion names the Harness and confirmed outcome`, async t => {
+    const f = await fixture(t, engine, lang), { page } = f;
+    const labels = {
+      en: ["Pi started", "Pi stopped"], zh: ["Pi启动", "Pi停用"], "zh-TW": ["Pi啟動", "Pi停用"],
+      ja: ["Piを有効化", "Piを無効化"], de: ["Pi aktiviert", "Pi deaktiviert"],
+    }[lang];
+    for (const [i, enabled] of [true, false].entries()) {
+      await f.icon("pi").press("Enter");
+      await page.waitForFunction(() => document.querySelector('.lib-prompt-harness-check[data-agent="pi"]')?.disabled === false);
+      assert(f.state.items.every(item => item.agents.includes("pi") === enabled), "the server confirms every template reached the requested state");
+      assert.equal(await page.locator("#status").textContent(), labels[i], "a successful bulk action names its Harness and localized direction");
+      assert(await page.locator("#status").evaluate(e => e.classList.contains("ok")), "confirmed complete success uses the green status");
+    }
+  });
+
+  test(`${engine}: ${lang}: overview omitted template cannot shrink the operation total`, async t => {
+    const f = await fixture(t, engine, lang), { page, sent } = f;
+    assert.equal(await page.locator(".lib-prompt-row").count(), 2, "the operation starts with two current templates");
+    f.omitFromReply("hidden");
+    await f.icon("pi").click();
+    await page.waitForFunction(() => document.querySelector('.lib-prompt-harness-check[data-agent="pi"]')?.disabled === false);
+    assert.deepEqual(sent.at(-1).body, { target: "pi", enabled: true });
+    assert.equal(await page.locator(".lib-prompt-row").count(), 1, "the successful public response omitted one original template");
+    assert(await page.locator("#status").evaluate(e => e.classList.contains("warn")), "missing deployment evidence cannot become a green success");
+    const text = await page.locator("#status").textContent();
+    assert(text.includes("Pi") && text.includes("1/2"), "the operation total remains the original snapshot size");
+  });
+
+  test(`${engine}: ${lang}: overview HTTP success without complete deployment remains a warning`, async t => {
+    const f = await fixture(t, engine, lang), { page } = f;
+    f.undeployed("hidden");
+    await f.icon("pi").click();
+    await page.waitForFunction(() => document.querySelector('.lib-prompt-harness-check[data-agent="pi"]')?.disabled === false);
+    assert(f.state.items.every(item => item.agents.includes("pi")), "both templates were selected in the successful HTTP response");
+    assert.equal(f.state.items.filter(item => item.states.some(s => s.agent === "pi" && s.deployed)).length, 1, "only one selected template was actually deployed");
+    assert(await page.locator("#status").evaluate(e => e.classList.contains("warn")), "an empty problems array is not evidence of complete deployment");
+    const text = await page.locator("#status").textContent();
+    assert(text.includes("Pi") && text.includes("1/2"), "the warning names the target and reports the returned actual deployment count");
+    f.undeployed(undefined);
+    await f.icon("pi").click();
+    await page.waitForFunction(() => document.querySelector('.lib-prompt-harness-check[data-agent="pi"]')?.disabled === false);
+    assert(f.state.items.every(item => item.states.some(s => s.agent === "pi" && s.deployed)), "the disable operation starts with both deployments confirmed");
+    f.omitState();
+    await f.icon("pi").click();
+    await page.waitForFunction(() => document.querySelector('.lib-prompt-harness-check[data-agent="pi"]')?.disabled === false);
+    assert(f.state.items.every(item => !item.agents.includes("pi") && !item.states.some(s => s.agent === "pi")), "the successful disable response removed selection but omitted actual target state");
+    assert(await page.locator("#status").evaluate(e => e.classList.contains("warn")), "absent target state is not evidence of successful removal");
+    const disableText = await page.locator("#status").textContent();
+    assert(disableText.includes("Pi") && disableText.includes("0/2"), "no removal is confirmed without returned target state");
+  });
+
+  test(`${engine}: ${lang}: overview bulk warning counts actual target success without hiding other Harness problems`, async t => {
+    const f = await fixture(t, engine, lang), { page } = f;
+    const settled = () => page.waitForFunction(() => document.querySelector('.lib-prompt-harness-check[data-agent="pi"]')?.disabled === false);
+    for (const enabled of [true, false]) {
+      if (!enabled) {
+        f.fail([]);
+        await f.icon("pi").click();
+        await settled();
+        assert(f.state.items.every(item => item.agents.includes("pi")), "disable failure starts with all templates deployed");
+      }
+      f.fail([{ what: "prompt:hidden-audit", agent: "pi", error: "fixture target deployment conflict" }]);
+      await f.icon("pi").click();
+      await settled();
+      const text = await page.locator("#status").textContent();
+      assert(await page.locator("#status").evaluate(e => e.classList.contains("warn")), "HTTP 200 with incomplete deployment remains an orange warning");
+      assert(text.includes("1/2"), "the warning reports actual successful templates out of the current total");
+      for (const part of ["Pi", "hidden-audit", "fixture target deployment conflict"]) assert(text.includes(part), `the warning preserves the target and item reason: ${part}`);
+    }
+    f.fail([{ what: "prompt:hidden-audit", agent: "codex", error: "fixture unrelated Codex conflict" }]);
+    await f.icon("pi").click();
+    await settled();
+    assert(f.state.items.every(item => item.agents.includes("pi")), "another Harness problem does not prevent Pi deployment in the public fixture");
+    const text = await page.locator("#status").textContent();
+    assert(await page.locator("#status").evaluate(e => e.classList.contains("warn")), "a genuine other-Harness problem remains visible as a warning");
+    for (const part of ["Pi", "2/2", "Codex", "hidden-audit", "fixture unrelated Codex conflict"]) assert(text.includes(part), `the result preserves target success and attributes the other failure: ${part}`);
+  });
+
+  test(`${engine}: ${lang}: overview Harness hover and keyboard focus emphasize only enabled controls`, async t => {
+    const f = await fixture(t, engine, lang), { page } = f;
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    const icon = f.icon("pi");
+    const appearance = () => icon.evaluate(e => {
+      const s = getComputedStyle(e);
+      return { scale: s.transform === "none" ? 1 : new DOMMatrixReadOnly(s.transform).a, shadow: s.boxShadow, duration: s.transitionDuration };
+    });
+    const idle = await appearance();
+    await icon.hover();
+    await page.waitForFunction(() => {
+      const s = getComputedStyle(document.querySelector('.lib-prompt-harness-check[data-agent="pi"]'));
+      return s.transform !== "none" && new DOMMatrixReadOnly(s.transform).a > 1;
+    });
+    const hovered = await appearance();
+    assert(hovered.scale > 1 && hovered.scale < 1.2, "hover uses a slight enlargement");
+    assert(hovered.shadow !== "none" && hovered.shadow !== idle.shadow, "hover adds visible shadow emphasis");
+    await page.mouse.down();
+    try {
+      await page.waitForFunction(() => new DOMMatrixReadOnly(getComputedStyle(document.querySelector('.lib-prompt-harness-check[data-agent="pi"]')).transform).a < 1);
+    } finally { await page.mouse.move(0, 0); await page.mouse.up(); }
+    await f.icon("claude").focus();
+    await page.keyboard.press("Tab");
+    assert(await icon.evaluate(e => e === document.activeElement && e.matches(":focus-visible")), "keyboard navigation reaches the real focus-visible Harness control");
+    await page.waitForFunction(() => new DOMMatrixReadOnly(getComputedStyle(document.querySelector('.lib-prompt-harness-check[data-agent="pi"]')).transform).a > 1);
+    assert.notEqual((await appearance()).shadow, "none", "keyboard focus also has shadow emphasis");
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    assert((await appearance()).duration.split(",").every(n => parseFloat(n) <= .01), "reduced motion removes animated enlargement transitions");
+    f.state.enabled = false;
+    await f.open();
+    await icon.hover({ force: true });
+    assert(await icon.isDisabled());
+    assert.equal((await appearance()).scale, 1, "disabled controls do not enlarge on hover");
+    assert.equal(f.sent.length, 0, "hover, focus and cancelled pointer presses never submit a mutation");
+  });
+
   test(`${engine}: ${lang}: overview partial result is not retained after row repair and refresh`, async t => {
     const f = await fixture(t, engine, lang), { page, sent } = f;
     f.state.items[1].states.push({ agent: "pi", status: "available" });
@@ -243,6 +360,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     await f.icon("pi").press("Enter");
     await page.locator("#status").filter({ hasText: "fixture hidden template write denied" }).waitFor();
     const status = await page.locator("#status").textContent();
+    assert(await page.locator("#status").evaluate(e => e.classList.contains("warn")), "a completely failed batch remains an orange warning");
+    assert(status.includes("0/2"), "a completely failed enable batch reports zero confirmed deployments");
     for (const text of ["visible-review", "hidden-audit", "fixture visible template conflict", "fixture hidden template write denied"]) assert(status.includes(text), `partial result identifies each failed template and reason: ${text}`);
     assert.equal(await f.icon("pi").evaluate(e => e.classList.contains("warn")), false, "individual deployment failures do not become global availability failures");
   });

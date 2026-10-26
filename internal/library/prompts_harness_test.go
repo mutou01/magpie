@@ -52,6 +52,50 @@ func TestPromptTemplatesHarnessTargetOnlyCacheAndDisable(t *testing.T) {
 	}
 }
 
+func TestPromptTemplatesHarnessCodexSuccessRetainsUnrelatedPiProblem(t *testing.T) {
+	home, _ := promptEnabledCodexFixture(t)
+	states, err := CheckPromptContext(context.Background(), PromptChange{Name: "audit-code", Target: "pi"})
+	if err != nil || len(states) != 1 || states[0].Status != "available" {
+		t.Fatalf("initial Pi check: %+v %v", states, err)
+	}
+	res, err := SavePrompt(PromptChange{Name: "audit-code", Text: "Saved body", Agents: []string{"pi"}})
+	if err != nil || len(res.Problems) != 0 {
+		t.Fatalf("initial Pi deployment: %+v %v", res, err)
+	}
+	piPath := filepath.Join(home, ".pi/agent/prompts/audit-code.md")
+	piBody := read(t, piPath)
+	piLog := os.Getenv("MAGPIE_FAKE_PI")
+	beforeRuns, beforeVersions := read(t, piLog), read(t, piLog+".version")
+	write(t, filepath.Join(home, ".pi/agent/extensions/new.ts"), "export default pi => {}")
+
+	res, err = SetPromptHarnessContext(context.Background(), "codex", true)
+	if err != nil || len(res.Problems) != 1 || res.Problems[0].Agent != "pi" || res.Problems[0].What != "prompt:audit-code" || res.Problems[0].Error == "" {
+		t.Fatalf("Codex batch must retain the independent Pi sync problem: %+v %v", res, err)
+	}
+	if !strings.Contains(read(t, filepath.Join(home, ".codex/skills/audit-code/SKILL.md")), "Saved body") {
+		t.Fatal("unrelated Pi problem prevented Codex deployment")
+	}
+	view, err := ReadPrompts()
+	if err != nil || len(view.Items) != 1 || !slices.Equal(view.Items[0].Agents, []string{"codex", "pi"}) {
+		t.Fatalf("batch lost a Harness selection: %+v %v", view, err)
+	}
+	for _, agent := range []string{"codex", "pi"} {
+		i := slices.IndexFunc(view.Items[0].States, func(s PromptState) bool { return s.Agent == agent })
+		if i < 0 || !view.Items[0].States[i].Deployed {
+			t.Fatalf("deployment fact lost for %s: %+v", agent, view.Items[0].States)
+		}
+		if agent == "pi" && view.Items[0].States[i].Status != "unverified" {
+			t.Fatalf("changed Pi inventory retained valid evidence: %+v", view.Items[0].States[i])
+		}
+	}
+	if piBody != "Saved body\n\n$ARGUMENTS\n" || read(t, piPath) != piBody {
+		t.Fatal("Codex batch changed the retained Pi deployment")
+	}
+	if read(t, piLog) != beforeRuns || read(t, piLog+".version") != beforeVersions {
+		t.Fatal("Codex batch or passive read restarted unrelated Pi")
+	}
+}
+
 func TestPromptTemplatesHarnessEmptyOffAndCancellation(t *testing.T) {
 	_, starts := promptEnabledCodexFixture(t)
 	for _, enabled := range []bool{true, false} {

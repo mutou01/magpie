@@ -392,7 +392,16 @@ selected template is actually deployed, otherwise grey, with the deployed/total
 count in its hover/focus description. Only a Harness-level check failure shows
 a red dot; missing or expired evidence and individual template conflicts do not.
 Intact deployments retain their color when evidence expires. Batch problems are
-listed by template and reason. Batch writes exclude row writes, deletion, switch
+listed by Harness, template and reason, including problems from other selected
+Harnesses synchronized by the operation. A completed batch shows a green
+Harness-named start/stop message only when the returned deployment states
+confirm every template in the original operation and there are no problems.
+Partial or failed batches retain the warning background, report the actual
+completed/total count and preserve every failure. HTTP success alone does not
+prove deployment success. Enabled heading controls scale slightly and gain a
+shadow on hover or keyboard focus; pressing still shrinks them, disabled
+controls do not scale, and reduced-motion preferences disable the transition.
+Batch writes exclude row writes, deletion, switch
 changes and refreshes until the response or failure-recovery read completes.
 Searching remains available during a batch; the response preserves its value,
 focus and selection rather than returning focus from the search field to an icon.

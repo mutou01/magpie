@@ -1278,9 +1278,25 @@ magpie.plugin("library", (ctx) => {
   async function setPromptHarness(id) {
     if (changing || promptWriting.size || lib.prompts?.enabled === false || !lib.prompts?.items.length) return;
     const enabled = promptHarnessCount(id) !== lib.prompts.items.length;
+    const ids = new Set(lib.prompts.items.map(p => p.id));
+    const name = lib.prompts.targets.find(a => a.id === id)?.name || nameOf(id);
     if (await change("prompts/harness", { target: id, enabled })) {
       const problems = lib.result?.problems || [];
-      if (problems.length) status(problems.map(p => `${p.what.replace(/^prompt:/, "")}: ${t(p.error)}`).join(" · "), "warn", 12000);
+      const items = lib.prompts.items.filter(p => ids.has(p.id));
+      const n = items.filter(p => {
+        const state = p.states?.find(s => s.agent === id);
+        return !!state && (enabled
+          ? !p.error && p.agents?.includes(id) && promptDeployed(state)
+          : !p.agents?.includes(id) && !promptDeployed(state));
+      }).length;
+      if (!problems.length && n === ids.size) {
+        status(t(enabled ? "{name} started" : "{name} stopped", { name }), "ok");
+      } else {
+        const summary = `${name} · ${t(enabled ? "Enabled {n}/{total} templates" : "Disabled {n}/{total} templates", { n, total: ids.size })}`;
+        const errors = problems.map(p => `${nameOf(p.agent)} · ${p.what.replace(/^prompt:/, "")}: ${t(p.error)}`);
+        if (!errors.length) errors.push(t("Some templates did not reach the requested state"));
+        status([summary, ...errors].join(" · "), "warn", 12000);
+      }
     }
     if (!document.activeElement || document.activeElement === document.body || document.activeElement === page) {
       page.querySelector(`.lib-prompt-harness-check[data-agent="${CSS.escape(id)}"]`)?.focus({ preventScroll: true });

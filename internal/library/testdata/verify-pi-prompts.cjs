@@ -142,6 +142,20 @@ async function main() {
         const deployed = await fs.readFile(deployedFile);
         publicSaveArtifactSHA256 = createHash("sha256").update(deployed).digest("hex");
         assert(deployed.toString("utf8").includes(templateBody) && !deployed.toString("utf8").includes(initialBody), "Editing through public Save replaces the same artifact with the current body");
+        const disabled = await api("harness", { target: "pi", enabled: false });
+        assert.deepEqual(disabled.result.problems.filter(p => p.agent === "pi"), [], "Batch disable has no Pi problems");
+        const disabledItem = disabled.prompts.items.find(p => p.id === item.id);
+        assert(disabledItem && !disabledItem.agents.includes("pi"), "Batch disable removes the current template's Pi selection");
+        await assert.rejects(fs.readFile(deployedFile), { code: "ENOENT" }, "Batch disable retires the unchanged owned artifact");
+        assert.equal(await counter(), before, "Batch disable did not start Pi");
+        const restored = await api("harness", { target: "pi", enabled: true });
+        assert.deepEqual(restored.result.problems.filter(p => p.agent === "pi"), [], "Batch enable has no Pi problems");
+        const restoredItem = restored.prompts.items.find(p => p.id === item.id);
+        assert(restoredItem && restoredItem.agents.includes("pi"), "Batch enable restores the same template's Pi selection");
+        assert.equal(restoredItem.text, templateBody, "Batch enable preserves the edited Library body");
+        assert.equal(pi(restoredItem.states).status, "enabled");
+        assert.equal(pi(restoredItem.states).deployed, true, "Batch enable actually deploys the template");
+        assert.deepEqual(await fs.readFile(deployedFile), deployed, "Batch enable restores the exact public Save/Edit artifact before native invocation");
         const explicit = await run(`/api-review ${tail}`);
         const explicitInput = JSON.stringify(explicit?.messages);
         assert(explicitInput.includes(templateBody), "Original Pi expands the public Save artifact into the model request");
@@ -166,7 +180,7 @@ async function main() {
       } finally { web.kill(); await webExit; }
     }
     assert.deepEqual(await fingerprint(), originalFingerprints, "Original Pi entry point and configuration fingerprints remain unchanged");
-    console.log(JSON.stringify({ version, eventOnlyExtension: "pass", registeredCommand: "pass", skillNamespace: "pass", publicAPI: "disabled -> Enable -> Check -> Save -> Edit Save -> original Pi invocation", publicSaveArtifact: "pass", publicSaveArtifactSHA256, explicitTemplate: "pass", ordinaryChatNegativeControl: "pass", httpAPI, originalFingerprintsUnchanged: originals.length, originalConfigurationWritten: false, modelEndpoint: "loopback fixture only" }));
+    console.log(JSON.stringify({ version, eventOnlyExtension: "pass", registeredCommand: "pass", skillNamespace: "pass", publicAPI: "disabled -> Enable -> Check -> Save -> Edit Save -> batch disable -> batch enable -> original Pi invocation", publicSaveArtifact: "pass", publicSaveArtifactSHA256, batchRestoreSameArtifact: "pass", batchPiProblems: 0, explicitTemplate: "pass", ordinaryChatNegativeControl: "pass", httpAPI, originalFingerprintsUnchanged: originals.length, originalConfigurationWritten: false, modelEndpoint: "loopback fixture only" }));
   } finally {
     await new Promise(resolve => server.close(resolve));
     assert.equal(path.dirname(root), path.parse(process.cwd()).root);
