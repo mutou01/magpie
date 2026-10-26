@@ -1411,7 +1411,7 @@ magpie.plugin("library", (ctx) => {
   function renderPrompts(body) {
     const card = el("div", "list lib-list lib-prompts");
     const head = el("div", "lib-cardhead");
-    const refresh = button(t("Refresh"), "action lib-prompt-refresh", async () => {
+    const refresh = button(t("Recheck availability"), "action lib-prompt-refresh", async () => {
       if (changing || promptWriting.size || lib.prompts?.enabled === false) return;
       refresh.disabled = true;
       const at = taken;

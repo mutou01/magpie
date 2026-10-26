@@ -80,6 +80,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await toggle.count(), 1, "prompt templates need their own global switch");
       assert.equal(await toggle.getAttribute("aria-checked"), "false");
       assert((await toggle.getAttribute("aria-label")).trim(), "the global switch has an accessible localized label");
+      const recheckLabel = { en: "Recheck availability", zh: "重新检查可用性", "zh-TW": "重新檢查可用性", ja: "利用可否を再確認", de: "Verfügbarkeit erneut prüfen" }[lang];
+      assert.equal((await page.locator(".lib-prompt-refresh").innerText()).trim(), recheckLabel, "the title action explicitly names the availability recheck in the current language");
+      assert(await page.getByRole("button", { name: recheckLabel, exact: true }).isVisible(), "the availability recheck has the same visible accessible name");
       assert.equal(sent.length, 0, "reading a disabled prompt library never starts availability checks");
       await toggle.press("Space");
       await page.locator("#status").filter({ hasText: "fixture enable failed" }).waitFor();

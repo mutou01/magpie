@@ -162,7 +162,7 @@ Turning the switch from off to on checks every installed supported Harness,
 including an empty library, and reports results independently. Repeating on
 does not restart checks. Adding a target checks only that Harness and the
 current template; removing a target does not start checks. New templates begin
-with no targets selected. Manual refresh forces an all-Harness check without
+with no targets selected. Recheck availability forces an all-Harness check without
 requiring a template name. The check API accepts `target` for a single Harness,
 `force` to refresh successful evidence, and `passive` for read-only preflight.
 Opening the page, passive preflight, saving and sync never start native checks.
@@ -399,8 +399,8 @@ focus and selection rather than returning focus from the search field to an icon
 
 The template list reuses the skills' `.lib-find` search layout and `agentChips`
 icons, including hover/focus expansion. Search filters names and bodies on input
-using NFKC plus lowercase; Refresh and New template stay in the heading. The
-editor retains its detailed target controls. Icons light for selected `deployed`
+using NFKC plus lowercase; Recheck availability and New template stay in the
+heading. The editor retains its detailed target controls. Icons light for selected `deployed`
 states; while the total switch is off they show retained selections.
 The list has no permanent native-verification badge: that explanation remains
 in the icon titles and editor. Abnormal icons keep their warning dots and
