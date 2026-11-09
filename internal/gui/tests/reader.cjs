@@ -87,9 +87,25 @@ async function viewOf(page, locator) {
 }
 
 // wheeled sends one wheel over the view and waits for its scroll to land;
-// false when the view didn't move in a second (it is at its end).
+// false when the view didn't move in a second (it is at its end). The
+// wheel is sent over a point of the view with no box of its own that
+// scrolls under it: one under the pointer takes the wheel first, as
+// Routing's steps did once they scrolled in 200px (ca9b5048e), and the
+// view never moved.
 async function wheeled(page, id, dy) {
-  const was = await page.locator("#" + id).evaluate((v) => v.scrollTop);
+  const { was, x, y } = await page.locator("#" + id).evaluate((v) => {
+    const r = v.getBoundingClientRect();
+    const scrolls = (e) => e.scrollHeight > e.clientHeight && /auto|scroll/.test(getComputedStyle(e).overflowY);
+    for (let fy = 0.5; fy < 1; fy += 0.1) for (const fx of [0.5, 0.15, 0.85, 0.02]) for (const s of [1, -1]) {
+      const x = r.left + r.width * fx, y = r.top + r.height * (s > 0 ? fy : 1 - fy);
+      let e = document.elementFromPoint(x, y);
+      if (!e || !v.contains(e)) continue;
+      while (e !== v && !scrolls(e)) e = e.parentElement;
+      if (e === v) return { was: v.scrollTop, x, y };
+    }
+    return { was: v.scrollTop, x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  });
+  await page.mouse.move(x, y);
   await page.mouse.wheel(0, dy);
   return page.waitForFunction(([id, was]) => document.getElementById(id).scrollTop !== was, [id, was], { timeout: 1000 }).then(() => true, () => false);
 }
@@ -176,4 +192,77 @@ async function openAgentSettings(page, id = "codex") {
   await page.waitForFunction(() => __settingsReads.asked > 0 && __settingsReads.asked === __settingsReads.drawn);
 }
 
-module.exports = { inView, reach, wheelTo, click, openPart, watchSettingsReads, settingsDrawn, agentRow, openAgentSettings };
+// settled waits for the page's motion to end: a routing group opening
+// into its editor moves its height and parts for ~700ms (91b0be836), and
+// where a control will be is read once that has stopped. Two frames pass
+// first: WebKit lists an animation a click started only a frame later, so
+// a look right after the click found none and went on.
+async function settled(page) {
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  await page.waitForFunction(() => !document.getAnimations().some((a) => a.playState === "running" && Number.isFinite(a.effect?.getComputedTiming().endTime)));
+}
+
+// pickItem presses an item of an open picker where the reader sees it.
+// A model picker is drawn again when its first read of /api/model-speeds
+// answers (readSpeeds, once a minute and after every load), so an item
+// found before that is detached by the time its box is asked for, and
+// Playwright gives null (#4274: searcher-pick's Automatic after a reload).
+// The item is found again each frame until its box is the same twice.
+async function pickItem(page, locator) {
+  let last = "";
+  for (let i = 0; i < 200; i++) {
+    const b = await locator.boundingBox().catch(() => null);
+    const now = JSON.stringify(b);
+    if (b && now === last) {
+      await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
+      return;
+    }
+    last = now;
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  }
+  throw new Error("the picker's item never settled: " + last);
+}
+
+
+// provPrefsProviders: /api/providers with a signed-in subscription for each
+// id, so its editor holds its warm-ups, check-in and resets (PROV_PREFS);
+// an id with no built-in row comes from a plugin of that name
+const BUILTIN_SUBS = new Set(["codex", "claude", "workbuddy", "qoder", "qoder-cn"]);
+function provPrefsProviders(ids, names = {}) {
+  const base = { icon: "generic", chat: "https://example.invalid/v1", models: [], agents: [], fallback: [], headers: {}, keyList: [], routing: "" };
+  return {
+    providers: ids.map((id) => ({ ...base, id, name: names[id] || id, account: { agent: id, agentName: names[id] || id, user: "ann@example.test", logins: [{ agent: id, user: "ann@example.test", plan: "Pro", active: true, on: true }] } })),
+    plugins: ids.filter((id) => !BUILTIN_SUBS.has(id)).map((id) => ({ id, pid: id, name: names[id] || id, spec: "fixture-" + id, methods: [] })),
+    presets: [], excluded: [], gateway: { running: true, window: true },
+  };
+}
+// openProvPrefs: the provider's editor, open on its own settings
+async function openProvPrefs(page, id) {
+  await page.goto(`http://magpie.test/?view=providers&edit=${encodeURIComponent(id)}`);
+  await page.locator(".editor .prov-prefs:not([hidden])").waitFor({ timeout: 60000 });
+}
+// inEditor brings a control in a provider's editor into sight. The editor
+// is in the modal, whose body isn't a view, so the app lets the scroll
+// stand; then it waits till no box has scrolled for ten frames, so a check
+// that a click left the page where it was reads it at rest.
+async function inEditor(page, locator) {
+  // a save draws the lists again, so the element found can be replaced
+  // before it is scrolled to: found again then
+  for (let i = 0; ; i++) {
+    try {
+      await locator.waitFor({ state: "visible" });
+      await locator.scrollIntoViewIfNeeded();
+      break;
+    } catch (e) {
+      if (i >= 5 || !/not attached/.test(e.message)) throw e;
+    }
+  }
+  await page.evaluate(() => new Promise((done) => {
+    let last = "", same = 0;
+    const at = () => [scrollY, ...[...document.querySelectorAll("*")].map((e) => e.scrollTop)].join(",");
+    const f = () => { const now = at(); same = now === last ? same + 1 : 0; last = now; if (same >= 10) done(); else requestAnimationFrame(f); };
+    requestAnimationFrame(f);
+  }));
+}
+
+module.exports = { provPrefsProviders, openProvPrefs, inEditor, settled, inView, reach, wheelTo, click, openPart, watchSettingsReads, settingsDrawn, agentRow, openAgentSettings, pickItem };

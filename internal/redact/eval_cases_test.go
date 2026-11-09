@@ -10,8 +10,9 @@ type evalCase struct {
 
 // evalValue is a value in a case's text. Kind is what it is, or for one
 // to keep what it was or could be taken for. Known, where set, is the
-// issue of a value that comes out wrong with the rules and the model.
-type evalValue struct{ V, Kind, Known string }
+// issue of a value that comes out wrong with the rules and Privacy
+// Filter; GuardKnown, with the rules and AstrLink Guard.
+type evalValue struct{ V, Kind, Known, GuardKnown string }
 
 // The keys are made up, in the vendors' shapes; the people, places and
 // numbers are made up or the ones vendors and standards give as examples.
@@ -49,6 +50,16 @@ var evalCases = []evalCase{
 		ID: "asset-files", From: "#3029",
 		Text: "import logo from './assets/logo@3x.png';\nimport intro from './media/intro@2x.mp4';",
 		Keep: []evalValue{{V: "logo@3x.png", Kind: "EMAIL"}, {V: "intro@2x.mp4", Kind: "EMAIL"}},
+	},
+	{
+		ID: "hex-addresses", From: "TakaNaShi_ShiKi on X",
+		Text: "## 逆向笔记\n\n| 名称 | 地址 | 备注 |\n|---|---|---|\n| 校验函数 | `0x004EA5E0` | 比较输入的注册码 |\n| 密钥表 | `0x0058C210` | 16 字节 |\n| 解密 | `0x004EB120` | XOR |",
+		Keep: []evalValue{{V: "0x004EA5E0", Kind: "SECRET"}, {V: "0x0058C210", Kind: "SECRET"}, {V: "0x004EB120", Kind: "SECRET"}},
+	},
+	{
+		ID: "hex-addresses-en", From: "TakaNaShi_ShiKi on X",
+		Text: "The license check is at `0x004EA5E0`; the key table at `0x0058C210`.",
+		Keep: []evalValue{{V: "0x004EA5E0", Kind: "ACCOUNT"}, {V: "0x0058C210", Kind: "ACCOUNT"}},
 	},
 	{
 		ID: "url-userinfo", From: "#3538",
@@ -293,6 +304,80 @@ var evalCases = []evalCase{
 		Text: "The 14:55Z errors came from our own org; Dana Whitfield is the lead if this turns out to be a settlement failure, and Priya wants it fixed first.",
 		Mask: []evalValue{{V: "Dana Whitfield", Kind: "PERSON"}, {V: "Priya", Kind: "PERSON"}},
 	},
+	// the owner's 脱敏 page, 10-26: a model's id beside a setting's key,
+	// and a toolchain's
+	{
+		ID: "settings-model", From: "owner",
+		Text: `[providers]` + "\n" + `groqAPIKey = "gsk_x…"` + "\n" + `groqAPIModel = "llama3-70b-8192"` + "\n" + `claudeAPIURL = "https://api.anthropic.com"` + "\n" + `claudeAPIModel = "claude-3-5-sonnet-20241022"`,
+		Keep: []evalValue{{V: "llama3-70b-8192", Kind: "SECRET"}, {V: "claude-3-5-sonnet-20241022", Kind: "SECRET"}},
+	},
+	{
+		ID: "rust-toolchain", From: "owner",
+		Text: "- MSRV check. The repo's minimum rust-version is 1.78. Pinning to `nightly-2026-09-01` (about 7 weeks old) is plausible.\n- Risk: the pinned toolchain lacks fixes.",
+		Keep: []evalValue{{V: "nightly-2026-09-01", Kind: "PERSON"}},
+	},
+	// ylorn. on Discord, choosing apps in Alma: the model took the apps'
+	// names for people's, and the vendor answered about the wrong app
+	{
+		ID: "app-names", From: "ylorn.",
+		Text: "Cicada, Mimi, Phosphor, Parakeet, Muesli",
+		Keep: []evalValue{{V: "Cicada", Kind: "PERSON"}, {V: "Mimi", Kind: "PERSON"}, {V: "Phosphor", Kind: "PERSON"}, {V: "Parakeet", Kind: "PERSON"}, {V: "Muesli", Kind: "PERSON"}},
+	},
+	{
+		// a word alone says nothing whose, and may be a person's
+		// ("Rina"): what the model takes for a name is masked (#5506)
+		ID: "app-alone", From: "ylorn.",
+		Text: "Muesli",
+		Keep: []evalValue{{V: "Muesli", Kind: "PERSON", Known: "#5506"}},
+	},
+	{
+		ID: "app-markdown", From: "ylorn.",
+		Text: "1. **Cicada** – a minimal note-taking app with Markdown.\n2. **Mimi** – a voice memo app with AI summaries.\n3. **Phosphor** – an RSS reader.",
+		Keep: []evalValue{{V: "Cicada", Kind: "PERSON"}, {V: "Mimi", Kind: "PERSON"}, {V: "Phosphor", Kind: "PERSON"}},
+	},
+	{
+		ID: "app-compare", From: "ylorn.",
+		Text: "Compare Cicada and Mimi for note-taking on macOS. Which one syncs better with iCloud?",
+		Keep: []evalValue{{V: "Cicada", Kind: "PERSON"}, {V: "Mimi", Kind: "PERSON"}},
+	},
+	{
+		ID: "app-vs", From: "ylorn.",
+		Text: "Phosphor vs Parakeet: which is the better dictation app?",
+		Keep: []evalValue{{V: "Phosphor", Kind: "PERSON"}, {V: "Parakeet", Kind: "PERSON"}},
+	},
+	{
+		ID: "app-list", From: "ylorn.",
+		Text: "I'm choosing a transcription app. So far: Muesli, Parakeet and Mimi. Muesli is free, Parakeet has a one-time price, Mimi is a subscription.",
+		Keep: []evalValue{{V: "Muesli", Kind: "PERSON"}, {V: "Parakeet", Kind: "PERSON"}, {V: "Mimi", Kind: "PERSON"}},
+	},
+	{
+		ID: "app-using", From: "ylorn.",
+		Text: "I've been using Phosphor for a week, and yesterday I switched to Muesli. Is Cicada worth trying too?",
+		Keep: []evalValue{{V: "Phosphor", Kind: "PERSON"}, {V: "Muesli", Kind: "PERSON"}, {V: "Cicada", Kind: "PERSON"}},
+	},
+	{
+		ID: "app-zh", From: "ylorn.",
+		Text: "帮我对比一下 Cicada 和 Mimi 这两个 app，哪个更适合记笔记？Phosphor 和 Parakeet 呢？",
+		Keep: []evalValue{{V: "Cicada", Kind: "PERSON"}, {V: "Mimi", Kind: "PERSON"}, {V: "Phosphor", Kind: "PERSON"}, {V: "Parakeet", Kind: "PERSON"}},
+	},
+	{
+		ID: "app-and-person", From: "ylorn.",
+		Text: "My colleague Mimi said the Phosphor app is great; she uses it every day.",
+		Mask: []evalValue{{V: "Mimi", Kind: "PERSON"}},
+		Keep: []evalValue{{V: "Phosphor", Kind: "PERSON"}},
+	},
+	{
+		ID: "app-and-full-name", From: "ylorn.",
+		Text: "John Smith asked me to install Cicada on his Mac.",
+		Mask: []evalValue{{V: "John Smith", Kind: "PERSON"}},
+		Keep: []evalValue{{V: "Cicada", Kind: "PERSON"}},
+	},
+	{
+		ID: "app-and-zh-name", From: "ylorn.",
+		Text: "张伟说 Parakeet 这个软件很好用，让我也装一个。",
+		Mask: []evalValue{{V: "张伟", Kind: "PERSON"}},
+		Keep: []evalValue{{V: "Parakeet", Kind: "PERSON"}},
+	},
 
 	// ---- what masking is for --------------------------------------------
 	{
@@ -334,6 +419,11 @@ var evalCases = []evalCase{
 		ID: "phone-intl", From: "true",
 		Text: "If the build breaks overnight, page Tom on +1 415-555-0132.",
 		Mask: []evalValue{{V: "415-555-0132", Kind: "PHONE"}, {V: "Tom", Kind: "PERSON"}},
+	},
+	{
+		ID: "greeting", From: "true",
+		Text: "Hi Mimi, thanks for the notes from Tuesday's call. Can you send them to Laura as well?",
+		Mask: []evalValue{{V: "Mimi", Kind: "PERSON"}, {V: "Laura", Kind: "PERSON"}},
 	},
 	{
 		ID: "card", From: "true",
@@ -379,7 +469,7 @@ var evalCases = []evalCase{
 	{
 		ID: "tool-result-mixed", From: "true",
 		Text: "$ cat contacts.csv\nname,email,phone\nRina Kobayashi,rina.k@fastmail.com,+81 90-1234-5678\nOmar Haddad,omar.haddad@proton.me,+44 7700 900123",
-		Mask: []evalValue{{V: "Rina Kobayashi", Kind: "PERSON"}, {V: "rina.k@fastmail.com", Kind: "EMAIL"}, {V: "90-1234-5678", Kind: "PHONE"}, {V: "Omar Haddad", Kind: "PERSON"}, {V: "omar.haddad@proton.me", Kind: "EMAIL"}, {V: "7700 900123", Kind: "PHONE"}},
+		Mask: []evalValue{{V: "Rina Kobayashi", Kind: "PERSON"}, {V: "rina.k@fastmail.com", Kind: "EMAIL"}, {V: "90-1234-5678", Kind: "PHONE", GuardKnown: "#3776"}, {V: "Omar Haddad", Kind: "PERSON"}, {V: "omar.haddad@proton.me", Kind: "EMAIL"}, {V: "7700 900123", Kind: "PHONE"}},
 		Keep: []evalValue{{V: "contacts.csv", Kind: "EMAIL"}},
 	},
 }

@@ -78,7 +78,7 @@ function maskPageOpen() {
   // a masked call in the tray panel opens the window on its request
   if (!maskKeyRead) {
     maskKeyRead = true;
-    const k = +params.get("key");
+    const k = params.get("key");
     if (k) {
       const q = new URLSearchParams(location.search);
       q.delete("key");
@@ -90,6 +90,7 @@ function maskPageOpen() {
 }
 function maskPageLoad(force) {
   maskDrawAll();
+  (prefs ? Promise.resolve() : loadSettings()).then(drawMaskAlert).catch(() => {});
   const sum = maskLoad(force)?.then(() => { drawMaskCard(); drawMaskList(); });
   const recs = maskL.read && force ? maskRefresh() : maskL.read ? null : maskFetch();
   return Promise.all([sum, recs]);
@@ -98,6 +99,15 @@ function maskDrawAll() {
   drawMaskCard();
   drawMaskList();
   if (maskO) drawMaskOne();
+}
+// the Masking alert (Must2333 on X): a notification when a value is
+// masked for the first time, off until turned on. Gateway mode leaves it
+// out, as it does the other alerts its desktop would show
+function drawMaskAlert() {
+  const s = prefs || {};
+  $("#maskPrefs").hidden = gatewayMode;
+  $("#maskAlertSegs").replaceChildren(segs([["off", t("Off")], ["on", t("On")]], s.maskAlert ? "on" : "off",
+    (v) => savePrefs({ ...prefsKeep(s), maskAlert: v === "on" }).then(drawMaskAlert)));
 }
 // while the page is on screen it keeps up with requests as they go
 setInterval(() => {
@@ -112,7 +122,7 @@ function drawMaskCard() {
   if (!box) return;
   // until the window's state is read, agents would show as their ids
   const on = maskOn(), sum = maskSumDays === maskDays && load.done ? maskSum : null;
-  const key = JSON.stringify([document.documentElement.lang, maskDays, on, sum, state?.agents?.length, (providers || maskProv)?.providers?.length]);
+  const key = JSON.stringify([document.documentElement.lang, maskDays, on, !!maskSettings().redactWords?.length, sum, state?.agents?.length, (providers || maskProv)?.providers?.length]);
   if (key === maskDrawn && box.firstChild) return;
   maskDrawn = key;
   // it moves when it first has numbers to say, and for other days: not
@@ -133,7 +143,7 @@ function drawMaskCard() {
     b.type = "button";
     b.onclick = maskTurnOn;
     head.append(b);
-  }
+  } else head.append(maskOffButton());
   if (sum?.requests || maskDays === 30) head.append(segs([["7", t("7 days")], ["30", t("30 days")]], String(maskDays), (v) => {
     maskDays = +v;
     try { localStorage.setItem("magpie.maskDays", v); } catch {}
@@ -201,11 +211,44 @@ function maskNone() {
   box.append(" ", link);
   return box;
 }
+// the way off, beside the way on (ZekeXiao on X: "脱敏好像只有一个打开
+// 开关，不能关？"). Both switches go off at once. Your own words mask with neither
+// on, and only Settings › Privacy can take them out, so with words the
+// button opens it there, and says so, rather than leave the page
+// saying off while words still mask
+function maskOffButton() {
+  const words = maskSettings().redactWords?.length;
+  const b = el("button", "text", t(words ? "Turn off in Settings" : "Turn off masking"));
+  b.type = "button";
+  if (words) {
+    b.title = t("Your own masked words still mask until you take them out, in Settings › Privacy");
+    b.onclick = (e) => openSettingsAt(e, "privacy");
+    return b;
+  }
+  b.onclick = () => {
+    b.disabled = true;
+    (prefs ? Promise.resolve() : loadSettings())
+      .then(() => {
+        // turned on again from this page, it comes back as it was
+        maskWasPersonal = !!prefs.redactPersonal;
+        return savePrefs({ ...prefsKeep(prefs), redact: false, redactPersonal: false });
+      })
+      .then(() => { maskDrawn = ""; drawMaskCard(); })
+      .finally(() => { b.disabled = false; });
+  };
+  return b;
+}
+let maskWasPersonal = false;
 function maskTurnOn(e) {
   const b = e.currentTarget;
   b.disabled = true;
   (prefs ? Promise.resolve() : loadSettings())
-    .then(() => savePrefs({ ...prefsKeep(prefs), redact: true }))
+    .then(() => {
+      const back = maskWasPersonal;
+      maskWasPersonal = false;
+      if (back) window.hideAccounts?.set(true, true);
+      return savePrefs({ ...prefsKeep(prefs), redact: true, ...(back ? { redactPersonal: true } : {}) });
+    })
     .then(() => { maskDrawn = ""; drawMaskCard(); })
     .finally(() => { b.disabled = false; });
 }
@@ -401,7 +444,7 @@ function maskRefresh() {
   const seq = maskSeq;
   return api(maskQuery(0)).then((r) => {
     if (seq !== maskSeq || !maskL.records.length) return;
-    const fresh = (r?.records || []).filter((x) => x.key > maskL.records[0].key);
+    const fresh = (r?.records || []).filter((x) => BigInt(x.key) > BigInt(maskL.records[0].key));
     if (!fresh.length) return;
     maskL.records = [...fresh, ...maskL.records];
     if (!maskO) drawMaskList();
@@ -471,7 +514,38 @@ function drawMaskList() {
     more.onclick = () => maskFetch(true);
     foot.append(more);
   }
+  // what was kept goes whole, after a confirm: maxyou2090's strict masking
+  // had kept far more than he wanted to keep
+  if (maskL.records.length || maskSum?.requests) {
+    const clear = el("button", "text msk-clear", t("Clear records…"));
+    clear.type = "button";
+    clear.disabled = maskL.busy || maskClearing;
+    clear.onclick = maskClear;
+    foot.append(clear);
+  }
   box.append(foot);
+}
+let maskClearing = false;
+async function maskClear() {
+  const ok = await confirmAction(t("Clear masking records?"),
+    t("Every request's record of what was masked is deleted from this computer. Masking stays as it is, and requests from now on are recorded again."),
+    t("Clear"));
+  if (!ok) return;
+  maskClearing = true;
+  drawMaskList();
+  try {
+    await api("masking/clear", {});
+    status(t("Masking records cleared"), "ok", 1500);
+  } catch (e) {
+    // what could not be deleted is still listed below
+    status(t(e.message), "err");
+  }
+  maskClearing = false;
+  if (maskO) maskOneClose();
+  maskSeq++;
+  Object.assign(maskL, { records: [], more: false, busy: false, read: false, error: "" });
+  maskDrawn = "";
+  return maskPageLoad(true);
 }
 
 function maskRequestList(box) {
@@ -564,7 +638,8 @@ function maskOneOpen(key, r) {
   if (!key) return;
   maskTipOff();
   const o = maskO = { key, r: r || maskL.records.find((x) => x.key === key) || null, sent: undefined, leaves: null, vals: new Map(), view: "both", pick: "", open: new Set(), whole: new Set() };
-  $("#maskCard").hidden = $("#maskList").hidden = true;
+  $("#maskCard").hidden = $("#maskList").hidden = $("#maskDemo").hidden = $("#maskPrefs").hidden = true;
+  xqd?.wake();
   $("#maskOne").hidden = false;
   drawMaskOne();
   (o.r ? Promise.resolve(o.r) : api("masking/record?key=" + key))
@@ -592,7 +667,9 @@ function maskOneClose() {
   maskO = null;
   $("#maskOne").hidden = true;
   $("#maskOne").replaceChildren();
-  $("#maskCard").hidden = $("#maskList").hidden = false;
+  $("#maskCard").hidden = $("#maskList").hidden = $("#maskDemo").hidden = false;
+  $("#maskPrefs").hidden = gatewayMode;
+  xqd?.wake();
   drawMaskList();
 }
 
@@ -740,11 +817,53 @@ function maskInk(into, text, here, o, info) {
       maskTipOn(mark, { p: m[0], kind: x.k, by: x.b });
     } else mark = maskPlace("msk-ph", m[0], x);
     mark.dataset.p = m[0];
+    maskActsOn(mark, x, o);
     into.append(mark);
     at = m.index + m[0].length;
   }
   into.append(document.createTextNode(text.slice(at)));
 }
+// maskActsOn: a value marked in the text, while this magpie still knows
+// it, opens a menu on a click (or Enter): Copy it, or let it go as
+// written from now on (yew_fence on Discord: a value masked by mistake
+// could be neither copied nor let go from here)
+function maskActsOn(mark, x, o) {
+  if (typeof o.vals.get(x.p) !== "string") return;
+  mark.classList.add("acts");
+  mark.setAttribute("role", "button");
+  mark.setAttribute("aria-haspopup", "menu");
+  mark.onclick = (e) => { e.stopPropagation(); maskValueMenu(mark, x, o); };
+  mark.onkeydown = (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    e.stopPropagation();
+    maskValueMenu(mark, x, o);
+  };
+}
+// maskValueMenu: Copy puts the value itself on the clipboard; Never mask
+// adds it to Settings › Privacy's list of that name (/api/masking/allow,
+// the same list), so the next request sends it as written. A value of
+// the user's own Masked words, or one in the list already, can't be added.
+function maskValueMenu(anchor, x, o) {
+  const again = agentMenu?.anchor === anchor;
+  closeAgentMenu();
+  maskTipOff();
+  if (again) return;
+  const v = o.vals.get(x.p);
+  if (typeof v !== "string") return;
+  const s = prefs || state?.settings || {};
+  const had = (s.redactAllow || []).some((a) => a.trim().toLowerCase() === v.trim().toLowerCase());
+  const why = x.b === "word" ? t("One of your Masked words") : had ? t("In Never mask already") : "";
+  openRowMenu(anchor, [
+    { name: "Copy", icon: COPY_ICON, run: () => copy(v, "", null, t("Value copied")) },
+    { name: "Never mask", icon: EYE, off: !!why, why, run: () => {
+      writingPrefs(api("masking/allow", { p: x.p }))
+        .then((ns) => { prefs = ns; if (state) state.settings = ns; status(t("Sent as written from the next request on"), "ok"); })
+        .catch((e) => status(t(e.message), "err"));
+    } },
+  ]);
+}
+
 // the parts of a long text around its placeholders, 120 characters each
 // side, the rest left out
 function maskWindows(text, info) {
@@ -785,13 +904,17 @@ function maskContent(r, o, info) {
       fold.fold.push(l);
     }
   } else {
-    // only the lines around each value are left: the request's whole text
-    // was in memory, and is no longer
-    if (!r.blocked) sec.append(el("p", "msk-gone", o.vals.size
+    // only the lines around each value are left, while memory has the
+    // record: the request's whole text was in memory, and is no longer
+    items = maskSnipTexts(r).map((text) => ({ leaf: { path: "", role: "", text } }));
+    if (items.length && !r.blocked) sec.append(el("p", "msk-gone", o.vals.size
       ? t("This request's whole text is no longer in memory: magpie keeps it for the newest requests only. The lines around each value are still here.")
       : t("What was written is kept in memory only, and magpie has restarted since. Still here: each value's kind, length and first characters, and the line around each placeholder as the vendor got it.")));
-    items = maskSnipTexts(r).map((text) => ({ leaf: { path: "", role: "", text } }));
-    if (!items.length) sec.append(el("div", "msk-none", t("The text around them was kept in memory only, and magpie has restarted since")));
+    // after a restart nothing of the text is left, by design: the record on
+    // disk never holds it (maskrec), so no folder or volume brings it back
+    // (brianeee2 on X, in Docker). A request held back sent nothing, and
+    // its card says so.
+    else if (!items.length && !r.blocked) sec.append(el("p", "msk-gone", t("This request's text and the values masked in it were kept in memory only, never on disk, and magpie has restarted since. The record keeps each value's kind, length and first characters.")));
   }
   const list = el("div", "msk-msgs" + (view === "both" ? " both" : ""));
   if (view === "both") {
@@ -892,6 +1015,7 @@ function maskHow(r, o, info) {
     add(t("In the answer"), n ? t(n === 1 ? "Put back 1" : "Put back {n}", { n: fmtN(n) }) : r.blocked ? "—" : memory || r.back ? t("Not named") : t("Not known after a restart"));
     b.append(top, mid, meta);
     b.onclick = () => { o.pick = o.pick === x.p ? "" : x.p; drawMaskOne(); };
+    b.oncontextmenu = (e) => { if (typeof o.vals.get(x.p) !== "string") return; e.preventDefault(); maskValueMenu(b, x, o); };
     aside.append(b);
   }
   aside.append(el("p", "msk-note", t("A value itself is in this computer's memory only: shown while it is pointed at or picked, and gone once magpie restarts. The record on disk keeps its kind, length and first characters.")));

@@ -173,7 +173,7 @@ button.pm-chip:disabled { cursor: default; opacity: .6; }
 @keyframes pm-pulse { 50% { opacity: .5; } }
 @keyframes pm-sheen { from { background-position: 100% 0; } to { background-position: 0 0; } }
 /* the GitHub section looking: three dots breathing in turn, and the word */
-.pm-sechead .pm-ghlook { display: inline-flex; align-items: center; gap: 7px; margin-left: auto; font-size: 11px; color: var(--faint); animation: pm-fade .4s var(--ease) both .15s; }
+.pm-sechead .pm-ghlook { display: inline-flex; align-items: center; gap: 7px; margin-left: auto; font-size: 11px; color: var(--faint); animation: pm-fade .26s var(--ease) both .08s; }
 .pm-ghlook .dots { display: inline-flex; gap: 3px; }
 .pm-ghlook .dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); opacity: .25; animation: pm-breathe 1.2s ease-in-out infinite; }
 .pm-ghlook .dots i:nth-child(2) { animation-delay: .16s; }
@@ -181,7 +181,7 @@ button.pm-chip:disabled { cursor: default; opacity: .6; }
 @keyframes pm-breathe { 0%, 70%, 100% { opacity: .25; transform: none; } 35% { opacity: .9; transform: translateY(-1.5px); } }
 @keyframes pm-fade { from { opacity: 0; } }
 /* its cards when they come: in where the ghosts were, one after another */
-.pm-arrive .pm-card { animation: pm-arrive .42s cubic-bezier(.2, .7, .2, 1) both; animation-delay: calc(var(--i, 0) * 40ms); }
+.pm-arrive .pm-card { animation: pm-arrive .3s cubic-bezier(.23, 1, .32, 1) both; animation-delay: calc(min(var(--i, 0), 12) * 28ms); }
 @keyframes pm-arrive { from { opacity: 0; transform: translateY(4px); } }
 
 .pm-note { margin: 0; padding: 4px 2px; font-size: 12px; color: var(--muted); }
@@ -190,9 +190,25 @@ button.pm-chip:disabled { cursor: default; opacity: .6; }
 .pm-note.warn svg { flex: none; margin-top: 2px; color: var(--amber); }
 .pm-empty { margin: 24px 4px; font-size: 12.5px; color: var(--red); }
 
-/* a package the market doesn't list */
-.pm-manual { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 12px; border: 1px dashed var(--line); flex-wrap: wrap; }
+/* a package the market doesn't list. It floats at the foot of the view
+   while the cards scroll under it (0x3108 on X: with many plugins it was
+   found only at the very end), on a strip of the page's own colour that
+   reaches into the gaps round it and the view's padding below; at the end
+   of the list it is back in its place, above the registry line. The strip
+   is the box's ::before, which a sticky box paints over its own border, so
+   the dashed border is drawn by its ::after. The strip takes the pointer, so
+   a press on it never reaches a card hidden under it */
+.pm-manual { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 12px; border: 1px solid transparent; flex-wrap: wrap; --bleed-l: 12px; }
+body.window .pm-manual { --bleed-l: 16px; }
+.pm-manual::before { content: ""; position: absolute; z-index: -1; top: -11px; bottom: -13px; left: calc(-1 * var(--bleed-l)); right: calc(var(--bar, 0px) - 12px); background: var(--bg); }
+.pm-manual::after { content: ""; position: absolute; inset: -1px; pointer-events: none; border-radius: inherit; border: 1px dashed var(--line); }
+/* a card reached with Tab stops above the box, not under it */
+#view-plugins { scroll-padding-bottom: 76px; }
 .pm-mlabel { font-size: 12px; color: var(--muted); }
+.pm-registry { display: flex; align-items: center; gap: 8px; padding: 4px 12px 0; flex-wrap: wrap; font-size: 12px; min-width: 0; }
+.pm-reg-url { min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+.pm-reg-from { color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
+.pm-reg-err { flex-basis: 100%; color: var(--red); }
 .pm-minput { flex: 1; min-width: 180px; height: 26px; padding: 0 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--fg); font: var(--code-style, normal) var(--code-weight, 400) 12px var(--code-font, var(--code)); font-stretch: var(--code-stretch, 100%); outline: none; }
 .pm-minput:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
 /* the system's folder picker, beside the field it fills */
@@ -260,12 +276,6 @@ button.pm-chip:disabled { cursor: default; opacity: .6; }
 .pm-bounce[data-gone] > svg { opacity: 0; }
 .pm-bounce path { fill: none; stroke: var(--skel, var(--pill)); stroke-width: 10; stroke-linecap: round; transition: stroke .35s ease-out; }
 .pm-bounce path[data-lit] { stroke: color-mix(in srgb, var(--accent) 18%, var(--skel, var(--pill))); }
-.pm-bird { position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 1; }
-.pm-bird svg { position: absolute; left: -13.2px; top: -19.6px; width: 22px; height: 22px; color: var(--fg); fill: currentColor; overflow: visible; }
-.pm-bird .tail { transform-box: view-box; transform-origin: 14px 22px; }
-.pm-bird .wing { transform-box: view-box; transform-origin: 30px 19.8px; }
-.pm-bird[data-flap] .wing { animation: pm-flap .16s ease-in-out infinite alternate; }
-@keyframes pm-flap { from { transform: rotate(-22deg); } to { transform: rotate(18deg); } }
 
 /* a README */
 .pm-md { font-size: 12.5px; line-height: 1.6; color: var(--fg-2); overflow-wrap: anywhere; }
@@ -303,6 +313,6 @@ button.pm-chip:disabled { cursor: default; opacity: .6; }
 }
 @media (prefers-reduced-motion: reduce) {
   .pm-card { transition: none; }
-  .pm-card.ghost .sk, .pm-bird .wing, .pm-ghlook, .pm-ghlook .dots i, .pm-arrive .pm-card { animation: none; }
+  .pm-card.ghost .sk, .pm-ghlook, .pm-ghlook .dots i, .pm-arrive .pm-card { animation: none; }
   .pm-ghlook .dots i { opacity: .5; }
 }

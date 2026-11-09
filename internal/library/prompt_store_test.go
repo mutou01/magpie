@@ -17,19 +17,21 @@ func rewriteLibraryWithoutPrompts(t *testing.T) {
 		t.Fatal(err)
 	}
 	delete(old, "prompts")
-	var applied map[string]map[string]json.RawMessage
-	if err := json.Unmarshal(old["applied"], &applied); err != nil {
-		t.Fatal(err)
+	if raw, exists := old["applied"]; exists {
+		var applied map[string]map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &applied); err != nil {
+			t.Fatal(err)
+		}
+		for _, a := range applied {
+			delete(a, "prompts")
+		}
+		b, err := json.Marshal(applied)
+		if err != nil {
+			t.Fatal(err)
+		}
+		old["applied"] = b
 	}
-	for _, a := range applied {
-		delete(a, "prompts")
-	}
-	b, err := json.Marshal(applied)
-	if err != nil {
-		t.Fatal(err)
-	}
-	old["applied"] = b
-	b, err = json.MarshalIndent(old, "", "  ")
+	b, err := json.MarshalIndent(old, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}

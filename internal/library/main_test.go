@@ -22,6 +22,11 @@ func TestMain(m *testing.M) {
 		fakePromptPi()
 		os.Exit(0)
 	}
+	// started as magpie's own image or browser server (Args mcp image,
+	// mcp browser): the fake server, for the hub to take it for that one
+	if len(os.Args) >= 3 && os.Args[1] == "mcp" && (os.Args[2] == "image" || os.Args[2] == "browser") {
+		os.Args = []string{os.Args[0], "-test.run=^TestFakeMCPServer$"}
+	}
 	if os.Getenv(testenv.Marker) != "" {
 		testenv.Main(m) // started again by a test: in its temp dir already
 	}
@@ -33,6 +38,9 @@ func TestMain(m *testing.M) {
 	for _, k := range []string{"TMPDIR", "TMP", "TEMP"} { // TMP, TEMP: Windows'
 		os.Setenv(k, tmp)
 	}
+	// Codex given its servers by their commands, as the tests expect;
+	// mcp_run_test.go turns it on
+	runOn = false
 	code := testenv.Run(m)
 	forgetProbes()
 	if left := leftDownloads(tmp); len(left) > 0 && code == 0 {

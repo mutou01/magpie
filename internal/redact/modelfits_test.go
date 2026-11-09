@@ -18,6 +18,11 @@ func TestModelMisreadsNotMasked(t *testing.T) {
 		{"ba319a758 gateway: the lone tool_choice none", "ba319a758", "account_number"},
 		{"Update to v0.1.1442 now", "0.1.1442", "account_number"},
 		{"a screenshot of 1624x1487 pixels", "1624x1487", "private_phone"},
+		// a model's and a toolchain's names in a setting
+		{`groqAPIModel = "llama3-70b-8192"`, "llama3-70b-8192", "secret"},
+		{`claudeAPIModel = "claude-3-5-sonnet-20241022"`, "claude-3-5-sonnet-20241022", "secret"},
+		{"--model mixtral-8x7b-32768 --max-tokens 4096", "mixtral-8x7b-32768", "secret"},
+		{`channel = "nightly-2026-09-01"`, "nightly-2026-09-01", "secret"},
 		// the model's and the assistant's own names
 		{"You are powered by the model named Opus 5.5.", "Opus", "private_person"},
 		{"Claude publishes it as an Artifact.", "Claude", "private_person"},
@@ -64,6 +69,13 @@ func TestModelMisreadsNotMasked(t *testing.T) {
 		{"wait until CI is green", "CI", "private_person"},
 		{"CodeRabbit\tpending\t0", "CodeRabbit", "private_person"},
 		{"Greptile Review at https://app.greptile.com/r/1", "Greptile", "private_person"},
+		// the method a call is made on: gctx.GetInt64 went as a made-up key
+		// in the reporter's redaction shot (#4444)
+		{`rows, err := gctx.GetInt64("user_id")`, "gctx.GetInt64", "secret"},
+		// a setting's word the local model took for a name, wherever it
+		// stood: 白名单, 821 replacements in the reporter's three days
+		// (tianyk, #4087)
+		{"开启白名单之后，把要放行的域名填进去。", "白名单", "private_person"},
 	} {
 		f := &fakeModel{values: map[string]string{c.value: c.label}}
 		if out, n := Mask(c.text, Options{Secrets: true, Personal: true, Model: f.find}); n != 0 {
@@ -82,13 +94,26 @@ func TestModelFindsStillMasked(t *testing.T) {
 		{"ring 020 7946 0958 after six", "020 7946 0958", "private_phone"},
 		{"send it to 42 Wallaby Way, Sydney", "42 Wallaby Way, Sydney", "private_address"},
 		{"the vault phrase is Zq8vR2mT6wLp", "Zq8vR2mT6wLp", "secret"},
+		// dashed words in lower case are a passphrase without a size or a date
+		{"the wifi passphrase is correct-horse-battery-staple", "correct-horse-battery-staple", "secret"},
+		{"password: maple-4-river-77", "maple-4-river-77", "secret"},
 		{"api key: 9f2c4e1a7b3d5c8e9f2c4e1a7b3d5c8e", "9f2c4e1a7b3d5c8e9f2c4e1a7b3d5c8e", "secret"},
 		{"write to rina.k@kowalczyk.pl", "rina.k@kowalczyk.pl", "private_email"},
 		// beside what the checks above leave out
 		{"the stripe one is sk_test_AbCdEfGh_IjKlMn", "sk_test_AbCdEfGh_IjKlMn", "secret"},
+		// a real secret of dotted parts, where no rule reaches it
+		{"the vault phrase is alpha.bravo.charlie9", "alpha.bravo.charlie9", "secret"},
+		// one a bracket of words follows is no call, nor one after a colon
+		// a comma follows (#4444's guard); values of their own, as a value
+		// found once is masked again wherever it stands
+		{"tell Bob it is Pw7nK4xQ9rTe (rotated today)", "Pw7nK4xQ9rTe", "secret"},
+		{"tell Bob it is delta.echo.foxtrot7 (keep it)", "delta.echo.foxtrot7", "secret"},
+		{"note: hunterTwoThree, keep it", "hunterTwoThree", "secret"},
 		{"the token is 9f2c4e1a7b3d5c8e9f2c", "9f2c4e1a7b3d5c8e9f2c", "secret"},
 		{"ask McDonald, he knows", "McDonald", "private_person"},
 		{"write to Rina at rina.lee@kowalczyk.pl", "Rina", "private_person"},
+		// a Chinese name where the words around it say one is meant
+		{"找王芳确认一下档期", "王芳", "private_person"},
 		{"ring +1 415.555.0132 after six", "+1 415.555.0132", "private_phone"},
 		{"we live at 3/12 Smith Street, Sydney", "3/12 Smith Street, Sydney", "private_address"},
 	} {
